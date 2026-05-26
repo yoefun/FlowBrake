@@ -1,0 +1,658 @@
+import { CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
+
+export struct ProcessRow {
+    process: string,
+    pid: string,
+    dl_speed: string,
+    ul_speed: string,
+    limit_dl: bool,
+    dl_limit: string,
+    limit_ul: bool,
+    ul_limit: string,
+    block: bool,
+    adaptive: bool,
+    is_global: bool,
+    is_group: bool,
+    depth: int,
+}
+
+component Cell inherits Rectangle {
+    in property <string> text;
+    in property <length> cell-width: 80px;
+    in property <color> foreground: #24303f;
+    in property <bool> strong: false;
+    callback clicked();
+    width: root.cell-width;
+    height: 32px;
+
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    Text {
+        text: root.text;
+        width: parent.width;
+        height: parent.height;
+        color: root.foreground;
+        font-size: 12px;
+        font-weight: root.strong ? 600 : 400;
+        vertical-alignment: center;
+        horizontal-alignment: left;
+        overflow: elide;
+    }
+}
+
+component HeaderCell inherits Rectangle {
+    in property <string> text;
+    in property <length> cell-width: 80px;
+    background: transparent;
+    width: root.cell-width;
+    height: 36px;
+
+    Text {
+        text: root.text;
+        width: parent.width;
+        height: parent.height;
+        color: #33465f;
+        font-size: 12px;
+        font-weight: 700;
+        vertical-alignment: center;
+        horizontal-alignment: left;
+        overflow: elide;
+    }
+}
+
+component CheckCell inherits Rectangle {
+    in property <bool> checked;
+    in property <length> cell-width: 70px;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    width: root.cell-width;
+    height: 32px;
+
+    CheckBox {
+        checked: root.checked;
+        enabled: root.enabled;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        toggled => {
+            root.toggled(self.checked);
+        }
+    }
+}
+
+component LimitDisplayCell inherits Rectangle {
+    in property <bool> checked;
+    in property <string> text;
+    in property <length> cell-width: 132px;
+    in property <bool> highlighted: false;
+    callback toggled(bool);
+    callback clicked();
+    width: root.cell-width;
+    height: 32px;
+
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 8px;
+        padding-left: 0px;
+        padding-right: 0px;
+        padding-top: 3px;
+        padding-bottom: 3px;
+
+        CheckBox {
+            checked: root.checked;
+            width: 22px;
+            toggled => {
+                root.toggled(self.checked);
+            }
+        }
+
+        Rectangle {
+            width: root.cell-width - 30px;
+            height: 26px;
+            background: root.checked ? (root.highlighted ? #244562 : #e8f2ff) : transparent;
+            border-color: root.checked ? #4a8fc8 : transparent;
+            border-width: 1px;
+            border-radius: 4px;
+
+            Text {
+                text: root.text;
+                font-size: 12px;
+                color: root.highlighted ? #edf6ff : (root.checked ? #23435f : #65758b);
+                x: 7px;
+                width: parent.width - 14px;
+                height: parent.height;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <color> background-color: #315f90;
+    in property <color> foreground-color: #ffffff;
+    in property <length> button-width: 92px;
+    callback clicked();
+    width: root.button-width;
+    height: 32px;
+    background: root.enabled ? root.background-color : #e7ebf0;
+    border-color: root.enabled ? root.background-color : #d3dae3;
+    border-width: 1px;
+    border-radius: 4px;
+
+    TouchArea {
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+
+    Text {
+        text: root.text;
+        width: parent.width;
+        height: parent.height;
+        color: root.enabled ? root.foreground-color : #8a95a3;
+        font-size: 12px;
+        font-weight: 600;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+component InfoPair inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    height: 28px;
+
+    VerticalLayout {
+        spacing: 1px;
+
+        Text {
+            text: root.label;
+            color: #65758b;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        Text {
+            text: root.value;
+            color: #24303f;
+            font-size: 13px;
+            font-weight: 600;
+            overflow: elide;
+        }
+    }
+}
+
+component SidebarCheck inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    callback toggled(bool);
+    height: 28px;
+
+    HorizontalLayout {
+        spacing: 9px;
+
+        CheckBox {
+            checked: root.checked;
+            width: 22px;
+            height: 24px;
+            toggled => {
+                root.toggled(self.checked);
+            }
+        }
+
+        Text {
+            text: root.text;
+            color: #24303f;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+component SidebarLabel inherits Rectangle {
+    in property <string> text;
+    height: 18px;
+
+    Text {
+        text: root.text;
+        color: #52647a;
+        font-size: 11px;
+        font-weight: 700;
+        vertical-alignment: center;
+    }
+}
+
+component SidebarInput inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    callback submitted(string);
+    callback focus-changed(bool);
+    height: 48px;
+
+    VerticalLayout {
+        spacing: 5px;
+
+        Text {
+            text: root.label;
+            color: #65758b;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        Rectangle {
+            height: 28px;
+            width: parent.width;
+            background: #ffffff;
+            border-color: input.has-focus ? #4a8fc8 : #cbd7e4;
+            border-width: 1px;
+            border-radius: 4px;
+
+            input := TextInput {
+                text: root.value;
+                x: 8px;
+                y: 1px;
+                width: parent.width - 16px;
+                height: parent.height - 2px;
+                font-size: 13px;
+                color: #172638;
+                single-line: true;
+                vertical-alignment: center;
+                accepted => {
+                    root.submitted(self.text);
+                    self.clear-focus();
+                }
+                changed has-focus => {
+                    if (!self.has-focus) {
+                        root.submitted(self.text);
+                    }
+                    root.focus-changed(self.has-focus);
+                }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    width: 1180px;
+    height: 700px;
+    title: "FlowBrake";
+
+    in property <[ProcessRow]> rows;
+    in property <string> status-text: "Interceptor stopped";
+    in property <bool> running: false;
+    in property <int> selected-row: -1;
+    in property <bool> sidebar-open: false;
+    in property <string> selected-title: "";
+    in property <string> selected-kind: "";
+    in property <string> selected-pid: "";
+    in property <string> selected-pids: "";
+    in property <string> selected-dl-speed: "";
+    in property <string> selected-ul-speed: "";
+    in property <bool> selected-limit-dl: false;
+    in property <string> selected-dl-limit: "";
+    in property <bool> selected-limit-ul: false;
+    in property <string> selected-ul-limit: "";
+    in property <bool> selected-block: false;
+    in property <bool> selected-adaptive: false;
+    in property <string> summary-throughput: "DL 0 B/s / UL 0 B/s";
+    in property <string> summary-global-limit: "DL Off / UL Off";
+    in property <string> summary-process-limits: "0";
+    in property <string> summary-blocked: "0";
+    in property <string> summary-adaptive: "0";
+
+    callback start-requested();
+    callback stop-requested();
+    callback refresh-requested();
+    callback collapse-all-requested();
+    callback expand-all-requested();
+    callback row-clicked(int);
+    callback selection-cleared();
+    callback bool-rule-edited(int, string, bool);
+    callback selected-limit-submitted(string, string);
+    callback selected-bool-rule-edited(string, bool);
+    callback sidebar-focus-changed(bool);
+
+    background: #f6f8fb;
+
+    function clear-active-inputs() {
+        focus-sink.focus();
+    }
+
+    focus-sink := FocusScope {
+        x: 0px;
+        y: 0px;
+        width: 0px;
+        height: 0px;
+    }
+
+    VerticalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            height: 48px;
+            background: #ffffff;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 7px;
+                padding-bottom: 7px;
+                spacing: 8px;
+
+                ActionButton {
+                    text: "Start";
+                    enabled: !root.running;
+                    background-color: #167454;
+                    button-width: 84px;
+                    clicked => { root.clear-active-inputs(); root.start-requested(); }
+                }
+
+                ActionButton {
+                    text: "Stop";
+                    enabled: root.running;
+                    background-color: #b33a3a;
+                    button-width: 84px;
+                    clicked => { root.clear-active-inputs(); root.stop-requested(); }
+                }
+
+                Rectangle { width: 1px; background: #dfe4ec; }
+
+                ActionButton {
+                    text: "Refresh";
+                    background-color: #315f90;
+                    clicked => { root.clear-active-inputs(); root.refresh-requested(); }
+                }
+
+                ActionButton {
+                    text: "Collapse All";
+                    background-color: #56657a;
+                    button-width: 112px;
+                    clicked => { root.clear-active-inputs(); root.collapse-all-requested(); }
+                }
+
+                ActionButton {
+                    text: "Expand All";
+                    background-color: #56657a;
+                    button-width: 104px;
+                    clicked => { root.clear-active-inputs(); root.expand-all-requested(); }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+
+        Rectangle {
+            height: 36px;
+            background: #dfe8f2;
+            border-color: #c8d4e2;
+            border-width: 1px;
+
+            TouchArea {
+                clicked => {
+                    root.clear-active-inputs();
+                    root.selection-cleared();
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+
+                HeaderCell { text: "Process"; cell-width: 280px; }
+                HeaderCell { text: "PID"; cell-width: 64px; }
+                HeaderCell { text: "DL Speed"; cell-width: 104px; }
+                HeaderCell { text: "UL Speed"; cell-width: 104px; }
+                HeaderCell { text: "DL Limit KB/s"; cell-width: 132px; }
+                HeaderCell { text: "UL Limit KB/s"; cell-width: 132px; }
+                HeaderCell { text: "Block"; cell-width: 64px; }
+                HeaderCell { text: "Adaptive"; cell-width: 82px; }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 0px;
+            height: root.height - 114px;
+
+            ScrollView {
+                viewport-width: parent.width;
+                viewport-height: parent.height;
+                horizontal-stretch: 1;
+
+                TouchArea {
+                    clicked => {
+                        root.clear-active-inputs();
+                        root.selection-cleared();
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 0px;
+
+                    for row[index] in root.rows: Rectangle {
+                        height: row.is_global ? 36px : 32px;
+                        background: index == root.selected-row ? #d4e7fa : (row.is_global ? #12304a : (row.is_group ? #e7eef7 : #f8fafc));
+
+                        TouchArea {
+                            clicked => {
+                                root.clear-active-inputs();
+                                root.row-clicked(index);
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 8px;
+
+                            Cell {
+                                text: row.depth == 0 ? row.process : ("      " + row.process);
+                                cell-width: 280px;
+                                foreground: row.is_global && index != root.selected-row ? white : #24303f;
+                                strong: row.is_global || row.is_group;
+                                clicked => {
+                                    root.clear-active-inputs();
+                                    root.row-clicked(index);
+                                }
+                            }
+                            Cell { text: row.pid; cell-width: 64px; foreground: row.is_global && index != root.selected-row ? white : #596579; }
+                            Cell { text: row.dl_speed; cell-width: 104px; foreground: row.is_global && index != root.selected-row ? white : #167454; }
+                            Cell { text: row.ul_speed; cell-width: 104px; foreground: row.is_global && index != root.selected-row ? white : #7b4f12; }
+                            LimitDisplayCell {
+                                checked: row.limit_dl;
+                                text: row.dl_limit;
+                                cell-width: 132px;
+                                highlighted: row.is_global && index != root.selected-row;
+                                clicked => { root.clear-active-inputs(); root.row-clicked(index); }
+                                toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "limit_dl", value); }
+                            }
+                            LimitDisplayCell {
+                                checked: row.limit_ul;
+                                text: row.ul_limit;
+                                cell-width: 132px;
+                                highlighted: row.is_global && index != root.selected-row;
+                                clicked => { root.clear-active-inputs(); root.row-clicked(index); }
+                                toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "limit_ul", value); }
+                            }
+                            CheckCell {
+                                checked: row.block;
+                                cell-width: 64px;
+                                toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "block", value); }
+                            }
+                            CheckCell {
+                                checked: row.adaptive;
+                                cell-width: 82px;
+                                toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "adaptive", value); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                width: root.sidebar-open ? 300px : 0px;
+                background: #ffffff;
+                border-color: #d7e0eb;
+                border-width: root.sidebar-open ? 1px : 0px;
+                clip: true;
+
+                TouchArea {
+                    clicked => {
+                        root.clear-active-inputs();
+                    }
+                }
+
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 6px;
+
+                    HorizontalLayout {
+                        height: 28px;
+                        spacing: 8px;
+
+                        Text {
+                            text: root.selected-title;
+                            color: #172638;
+                            font-size: 17px;
+                            font-weight: 700;
+                            overflow: elide;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            background: close-hover.has-hover ? #e9eef5 : transparent;
+                            border-radius: 4px;
+
+                            close-hover := TouchArea {
+                                clicked => {
+                                    root.clear-active-inputs();
+                                    root.selection-cleared();
+                                }
+                            }
+
+                            Text {
+                                text: "X";
+                                color: #52647a;
+                                font-size: 13px;
+                                font-weight: 700;
+                                width: parent.width;
+                                height: parent.height;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: #e2e8f0; }
+
+                    InfoPair { label: "Row Type"; value: root.selected-kind; }
+                    InfoPair { label: "PID"; value: root.selected-pid; }
+                    InfoPair { label: "PIDs"; value: root.selected-pids; }
+                    InfoPair { label: "Download"; value: root.selected-dl-speed; }
+                    InfoPair { label: "Upload"; value: root.selected-ul-speed; }
+
+                    Rectangle { height: 1px; background: #e2e8f0; }
+
+                    SidebarLabel { text: "LIMITS"; }
+
+                    SidebarCheck {
+                        text: "Limit download";
+                        checked: root.selected-limit-dl;
+                        toggled(value) => { root.selected-bool-rule-edited("limit_dl", value); }
+                    }
+
+                    SidebarInput {
+                        label: "Download KB/s";
+                        value: root.selected-dl-limit;
+                        submitted(value) => { root.selected-limit-submitted("dl", value); }
+                        focus-changed(value) => { root.sidebar-focus-changed(value); }
+                    }
+
+                    SidebarCheck {
+                        text: "Limit upload";
+                        checked: root.selected-limit-ul;
+                        toggled(value) => { root.selected-bool-rule-edited("limit_ul", value); }
+                    }
+
+                    SidebarInput {
+                        label: "Upload KB/s";
+                        value: root.selected-ul-limit;
+                        submitted(value) => { root.selected-limit-submitted("ul", value); }
+                        focus-changed(value) => { root.sidebar-focus-changed(value); }
+                    }
+
+                    Rectangle { height: 1px; background: #e2e8f0; }
+
+                    SidebarLabel { text: "ACTIONS"; }
+
+                    SidebarCheck {
+                        text: "Block traffic";
+                        checked: root.selected-block;
+                        toggled(value) => { root.selected-bool-rule-edited("block", value); }
+                    }
+
+                    SidebarCheck {
+                        text: "Adaptive";
+                        checked: root.selected-adaptive;
+                        toggled(value) => { root.selected-bool-rule-edited("adaptive", value); }
+                    }
+
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 30px;
+            background: #ffffff;
+            border-color: #dfe4ec;
+            border-width: 1px;
+
+            TouchArea {
+                clicked => {
+                    root.clear-active-inputs();
+                    root.selection-cleared();
+                }
+            }
+
+            Text {
+                x: 12px;
+                width: parent.width - 24px;
+                height: parent.height;
+                text: root.status-text
+                    + "   |   " + root.summary-throughput
+                    + "   |   Global " + root.summary-global-limit
+                    + "   |   Limited " + root.summary-process-limits
+                    + "   Blocked " + root.summary-blocked
+                    + "   Adaptive " + root.summary-adaptive;
+                color: root.running ? #167454 : #596579;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+                overflow: elide;
+            }
+        }
+    }
+}

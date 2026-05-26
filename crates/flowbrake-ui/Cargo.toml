@@ -1,0 +1,15 @@
+[package]
+name = "flowbrake-ui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+flowbrake-core = { path = "../flowbrake-core" }
+flowbrake-windows = { path = "../flowbrake-windows" }
+slint = "1"
+tray-icon = { version = "0.24.0", default-features = false }
+
+[build-dependencies]
+slint-build = "1"

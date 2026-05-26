@@ -1,0 +1,7 @@
+/target/
+/bin/
+/obj/
+/publish/
+/dist/
+/.vs/
+/.omx/

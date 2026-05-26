@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "crates/flowbrake-core",
+    "crates/flowbrake-windows",
+    "crates/flowbrake-ui",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/anthonymendez/flowbrake"
