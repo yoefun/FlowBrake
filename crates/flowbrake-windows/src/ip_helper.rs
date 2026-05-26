@@ -71,7 +71,7 @@ pub fn get_network_processes(active_rule_pids: impl IntoIterator<Item = u32>) ->
         .filter_map(|pid| process_name(pid).map(|name| ProcessInfo { pid, name }))
         .collect();
 
-    processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    processes.sort_by_key(|process| process.name.to_lowercase());
     processes
 }
 
