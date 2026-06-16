@@ -226,6 +226,7 @@ export component TitleBar inherits Rectangle {
     in property <bool> maximized;
     in property <bool> speed-unit-bits;
     in-out property <bool> settings-open: false;
+    property <bool> drag-started: false;
     callback drag-requested();
     callback maximize-toggle-requested();
     callback minimize-requested();
@@ -278,8 +279,14 @@ export component TitleBar inherits Rectangle {
 
             drag-hit := TouchArea {
                 moved => {
-                    if (self.pressed) {
+                    if (self.pressed && !root.drag-started) {
+                        root.drag-started = true;
                         root.drag-requested();
+                    }
+                }
+                changed pressed => {
+                    if (!self.pressed) {
+                        root.drag-started = false;
                     }
                 }
                 double-clicked => {

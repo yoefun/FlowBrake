@@ -262,7 +262,7 @@ export component AppWindow inherits Window {
     min-height: 500px;
     title: "FlowBrake";
     no-frame: true;
-    resize-border-width: 8px;
+    resize-border-width: 4px;
 
     in property <[ProcessRow]> rows;
     in property <string> status-text: "Interceptor stopped";
@@ -383,68 +383,75 @@ export component AppWindow inherits Window {
             spacing: 0px;
             vertical-stretch: 1;
 
-            ScrollView {
-                viewport-width: parent.width;
-                viewport-height: root.table-viewport-height;
+            Rectangle {
+                vertical-stretch: 1;
                 horizontal-stretch: 1;
+                clip: true;
 
-                VerticalLayout {
-                    spacing: 0px;
+                ScrollView {
+                    width: parent.width;
+                    height: parent.height;
+                    viewport-width: parent.width;
+                    viewport-height: root.table-viewport-height;
 
-                    for row[index] in root.rows: Rectangle {
-                        height: row.is_global ? 36px : 32px;
-                        background: index == root.selected-row ? #d4e7fa : (row.is_global ? #12304a : (row.is_group ? #e7eef7 : #f8fafc));
+                    VerticalLayout {
+                        spacing: 0px;
 
-                        TouchArea {
-                            clicked => {
-                                root.clear-active-inputs();
-                                root.row-clicked(index);
-                            }
-                        }
+                        for row[index] in root.rows: Rectangle {
+                            height: row.is_global ? 36px : 32px;
+                            background: index == root.selected-row ? #d4e7fa : (row.is_global ? #12304a : (row.is_group ? #e7eef7 : #f8fafc));
 
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 8px;
-
-                            Cell {
-                                text: row.depth == 0 ? row.process : ("      " + row.process);
-                                cell-width: 280px;
-                                foreground: row.is_global && index != root.selected-row ? white : #24303f;
-                                strong: row.is_global || row.is_group;
+                            TouchArea {
                                 clicked => {
                                     root.clear-active-inputs();
                                     root.row-clicked(index);
                                 }
                             }
-                            Cell { text: row.pid; cell-width: 64px; foreground: row.is_global && index != root.selected-row ? white : #596579; }
-                            Cell { text: row.dl_speed; cell-width: 104px; foreground: row.is_global && index != root.selected-row ? white : #167454; }
-                            Cell { text: row.ul_speed; cell-width: 104px; foreground: row.is_global && index != root.selected-row ? white : #7b4f12; }
-                            LimitDisplayCell {
-                                checked: row.limit_dl;
-                                text: row.dl_limit;
-                                cell-width: 132px;
-                                highlighted: row.is_global && index != root.selected-row;
-                                clicked => { root.clear-active-inputs(); root.row-clicked(index); }
-                                toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "limit_dl", value); }
-                            }
-                            LimitDisplayCell {
-                                checked: row.limit_ul;
-                                text: row.ul_limit;
-                                cell-width: 132px;
-                                highlighted: row.is_global && index != root.selected-row;
-                                clicked => { root.clear-active-inputs(); root.row-clicked(index); }
-                                toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "limit_ul", value); }
-                            }
-                            CheckCell {
-                                checked: row.block;
-                                cell-width: 64px;
-                                toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "block", value); }
-                            }
-                            CheckCell {
-                                checked: row.adaptive;
-                                cell-width: 82px;
-                                toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "adaptive", value); }
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 8px;
+
+                                Cell {
+                                    text: row.depth == 0 ? row.process : ("      " + row.process);
+                                    cell-width: 280px;
+                                    foreground: row.is_global && index != root.selected-row ? white : #24303f;
+                                    strong: row.is_global || row.is_group;
+                                    clicked => {
+                                        root.clear-active-inputs();
+                                        root.row-clicked(index);
+                                    }
+                                }
+                                Cell { text: row.pid; cell-width: 64px; foreground: row.is_global && index != root.selected-row ? white : #596579; }
+                                Cell { text: row.dl_speed; cell-width: 104px; foreground: row.is_global && index != root.selected-row ? white : #167454; }
+                                Cell { text: row.ul_speed; cell-width: 104px; foreground: row.is_global && index != root.selected-row ? white : #7b4f12; }
+                                LimitDisplayCell {
+                                    checked: row.limit_dl;
+                                    text: row.dl_limit;
+                                    cell-width: 132px;
+                                    highlighted: row.is_global && index != root.selected-row;
+                                    clicked => { root.clear-active-inputs(); root.row-clicked(index); }
+                                    toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "limit_dl", value); }
+                                }
+                                LimitDisplayCell {
+                                    checked: row.limit_ul;
+                                    text: row.ul_limit;
+                                    cell-width: 132px;
+                                    highlighted: row.is_global && index != root.selected-row;
+                                    clicked => { root.clear-active-inputs(); root.row-clicked(index); }
+                                    toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "limit_ul", value); }
+                                }
+                                CheckCell {
+                                    checked: row.block;
+                                    cell-width: 64px;
+                                    toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "block", value); }
+                                }
+                                CheckCell {
+                                    checked: row.adaptive;
+                                    cell-width: 82px;
+                                    toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "adaptive", value); }
+                                }
                             }
                         }
                     }
@@ -453,6 +460,7 @@ export component AppWindow inherits Window {
 
             Rectangle {
                 width: root.sidebar-open ? 300px : 0px;
+                vertical-stretch: 1;
                 background: #ffffff;
                 border-color: #d7e0eb;
                 border-width: root.sidebar-open ? 1px : 0px;

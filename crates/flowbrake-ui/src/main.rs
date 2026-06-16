@@ -33,6 +33,7 @@ struct AppState {
     engine: NetworkEngine,
     expanded: HashSet<String>,
     rules: HashMap<u32, ProcessRule>,
+    name_rules: HashMap<String, ProcessRule>,
     global_rule: GlobalRule,
     rows: Vec<CoreProcessRow>,
     dl_history: HashMap<u32, RollingAverage>,
@@ -54,9 +55,10 @@ impl AppState {
     fn new(settings: AppSettings) -> Self {
         Self {
             engine: NetworkEngine::from_current_exe_dir(),
-            expanded: HashSet::new(),
+            expanded: settings.expanded,
             rules: HashMap::new(),
-            global_rule: GlobalRule::default(),
+            name_rules: settings.name_rules,
+            global_rule: settings.global_rule,
             rows: Vec::new(),
             dl_history: HashMap::new(),
             ul_history: HashMap::new(),
@@ -78,7 +80,39 @@ impl AppState {
         self.speed_unit = unit;
     }
 
+    fn to_settings(&self) -> AppSettings {
+        AppSettings {
+            speed_unit_bits: matches!(self.speed_unit, SpeedUnit::Bits),
+            global_rule: self.global_rule.clone(),
+            name_rules: self.name_rules.clone(),
+            expanded: self.expanded.clone(),
+            ..AppSettings::default()
+        }
+    }
+
+    fn sync_name_rules_to_pids(&mut self) {
+        let processes = get_network_processes(self.rules.keys().copied());
+        let mut added = Vec::new();
+        for process in processes {
+            let key = process.name.to_lowercase();
+            let Some(rule) = self.name_rules.get(&key).cloned() else {
+                continue;
+            };
+            if self.rules.insert(process.pid, rule.clone()).is_none() {
+                added.push((process.pid, rule));
+            }
+        }
+
+        if self.engine.is_running() {
+            for (pid, rule) in added {
+                self.engine
+                    .apply(EngineCommand::UpdateRule(pid, runtime_rule(&rule)));
+            }
+        }
+    }
+
     fn rebuild_rows(&mut self) {
+        self.sync_name_rules_to_pids();
         let processes = get_network_processes(self.rules.keys().copied());
         self.rows = build_process_rows(
             &processes,
@@ -382,7 +416,13 @@ impl AppState {
                 self.engine
                     .apply(EngineCommand::SetGlobalRule(runtime_rule(&rule)));
             }
-            RowKind::Group { pids, .. } => {
+            RowKind::Group { process_name, pids, .. } => {
+                let key = process_name.to_lowercase();
+                if rule.has_any_rule() {
+                    self.name_rules.insert(key, rule.clone());
+                } else {
+                    self.name_rules.remove(&key);
+                }
                 for pid in pids {
                     self.update_pid_rule(*pid, rule.clone());
                 }
@@ -552,16 +592,24 @@ fn make_tray_icon() -> Result<Icon, tray_icon::BadIcon> {
     Icon::from_rgba(rgba, width as u32, height as u32)
 }
 
+fn persist_settings(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
+    let mut settings = state.borrow().to_settings();
+    settings.capture_window(app.window());
+    if let Err(err) = settings.save() {
+        app.set_status_text(format!("Failed to save settings: {err}").into());
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     if !is_elevated() && matches!(relaunch_as_admin(&[]), RelaunchResult::Started) {
         return Ok(());
     }
 
     let settings = AppSettings::load();
+    let window_settings = settings.clone();
     let app = AppWindow::new()?;
-    app.set_window_maximized(app.window().is_maximized());
+    app.set_window_maximized(window_settings.window_maximized);
     app.set_speed_unit_bits(settings.speed_unit_bits);
-    let _ = window_chrome::apply_window_appearance(app.window());
     let state = Rc::new(RefCell::new(AppState::new(settings)));
 
     render_rows(&app, &state);
@@ -593,12 +641,14 @@ fn main() -> Result<(), slint::PlatformError> {
 
     {
         let app_weak = app.as_weak();
+        let state = Rc::clone(&state);
         app.on_window_maximize_toggle_requested(move || {
             let app = app_weak.unwrap();
             let next_maximized = !app.window().is_maximized();
             app.window().set_maximized(next_maximized);
             app.set_window_maximized(app.window().is_maximized());
             let _ = window_chrome::apply_window_appearance(app.window());
+            persist_settings(&app, &state);
         });
     }
 
@@ -619,6 +669,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let is_double_click = state.borrow_mut().handle_row_click(row_index);
             if is_double_click {
                 state.borrow_mut().toggle_row_expanded(row_index);
+                persist_settings(&app, &state);
             } else {
                 state.borrow_mut().select_row(row_index);
             }
@@ -645,6 +696,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 .borrow_mut()
                 .edit_bool(row_index, field.as_str(), value);
             render_rows(&app, &state);
+            persist_settings(&app, &state);
         });
     }
 
@@ -657,6 +709,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 .borrow_mut()
                 .edit_selected_limit(direction.as_str(), value.as_str());
             update_selected_sidebar(&app, &state);
+            persist_settings(&app, &state);
         });
     }
 
@@ -667,6 +720,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let app = app_weak.unwrap();
             state.borrow_mut().edit_selected_bool(field.as_str(), value);
             render_rows(&app, &state);
+            persist_settings(&app, &state);
         });
     }
 
@@ -691,13 +745,21 @@ fn main() -> Result<(), slint::PlatformError> {
                 .borrow_mut()
                 .set_speed_unit(SpeedUnit::from_bits_mode(bits_mode));
             app.set_speed_unit_bits(bits_mode);
-            let settings = AppSettings {
-                speed_unit_bits: bits_mode,
-            };
-            if let Err(err) = settings.save() {
-                app.set_status_text(format!("Failed to save settings: {err}").into());
-            }
+            persist_settings(&app, &state);
             render_rows(&app, &state);
+        });
+    }
+
+    let init_window_timer = Timer::default();
+    {
+        let app_weak = app.as_weak();
+        init_window_timer.start(TimerMode::SingleShot, Duration::from_millis(0), move || {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            window_settings.apply_window(app.window());
+            app.set_window_maximized(app.window().is_maximized());
+            let _ = window_chrome::apply_window_appearance(app.window());
         });
     }
 
@@ -748,6 +810,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     let _ = window_chrome::apply_window_appearance(app.window());
                 }
                 Some(TrayAction::Exit) => {
+                    persist_settings(&app, &state);
                     apply_engine_stop(&app, &state);
                     state.borrow_mut().full_exit();
                     let _ = app.hide();
@@ -783,6 +846,7 @@ fn apply_engine_stop(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
 }
 
 fn handle_close_request(app: &AppWindow, state: &Rc<RefCell<AppState>>) -> CloseRequestResponse {
+    persist_settings(app, state);
     if state.borrow().engine.is_running() {
         state.borrow_mut().set_tray_visible(true);
         let _ = app.hide();

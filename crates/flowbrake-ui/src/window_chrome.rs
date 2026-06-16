@@ -34,8 +34,11 @@ pub fn apply_window_appearance(_window: &slint::Window) -> bool {
 #[cfg(target_os = "windows")]
 pub fn start_window_drag(window: &slint::Window) -> bool {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
+    };
 
     let window_handle = window.window_handle();
     let Ok(handle) = window_handle.window_handle() else {
@@ -46,12 +49,15 @@ pub fn start_window_drag(window: &slint::Window) -> bool {
     };
 
     unsafe {
+        let mut point = POINT { x: 0, y: 0 };
+        let _ = GetCursorPos(&mut point);
+        let lparam = ((point.y as u32) << 16) | (point.x as u32 & 0xffff);
         let _ = ReleaseCapture();
         SendMessageW(
             win32.hwnd.get() as _,
             WM_NCLBUTTONDOWN,
             HTCAPTION as usize,
-            0,
+            lparam as isize,
         );
     }
     true
