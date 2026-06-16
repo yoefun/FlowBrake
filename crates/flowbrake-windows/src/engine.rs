@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use flowbrake_core::{Direction, GlobalRule, ProcessRule, TokenBucket};
 use thiserror::Error;
 
+use crate::elevation::runtime_dir;
 use crate::ip_helper::PortPidMap;
 use crate::packet::Ipv4Packet;
 use crate::windivert::{WinDivert, WinDivertError};
@@ -79,11 +80,7 @@ impl NetworkEngine {
     }
 
     pub fn from_current_exe_dir() -> Self {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from("."));
-        Self::new(exe_dir)
+        Self::new(runtime_dir())
     }
 
     pub fn is_running(&self) -> bool {

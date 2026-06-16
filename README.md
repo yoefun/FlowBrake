@@ -19,7 +19,7 @@ implementation and generated .NET publish artifacts have been removed.
 - Adaptive mode that adjusts token-bucket rates toward the configured target
 - Live rolling speed display
 - System tray support while the interceptor is running
-- Windows GUI executable with embedded icon and release UAC manifest
+- Windows GUI executable with embedded icon and application manifest
 
 ## Platform Support
 
@@ -65,9 +65,10 @@ copies these runtime files next to the executable:
 - `WinDivert.dll`
 - `WinDivert64.sys`
 
-The release executable embeds a `requireAdministrator` UAC manifest. Debug and
-test builds do not embed that manifest so `cargo test` can run without an
-elevation prompt.
+The executable uses an `asInvoker` manifest so the UI can start normally. On
+launch, FlowBrake requests administrator approval through UAC when it needs to
+open the WinDivert interceptor. If approval is denied, the UI stays open but
+traffic interception remains unavailable.
 
 To create the release zip used by CI:
 
@@ -98,16 +99,24 @@ then, the supported release artifact is the clean zip package.
 
 ## Running
 
-Build the release executable and run:
+Build the executable and run:
+
+```powershell
+cargo run -p flowbrake-ui
+```
+
+Or use the release build:
 
 ```powershell
 .\target\release\flowbrake-ui.exe
 ```
 
+Approve the UAC prompt when FlowBrake asks for administrator access.
+
 Use the UI as follows:
 
-1. Click `Start` to open the WinDivert interceptor.
-2. Enter a KB/s value for a process or the global row.
+1. The interceptor starts automatically after administrator approval.
+2. Enter a speed value for a process or the global row.
 3. Enable the corresponding download or upload checkbox to apply the limit.
 4. Use `Block` to drop all matching traffic for a row.
 5. Use `Adaptive` to make the limiter adjust toward the displayed target.

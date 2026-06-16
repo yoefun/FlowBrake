@@ -184,18 +184,99 @@ pub fn compute_adaptive_rate(current_rate: f64, measured_avg: f64, target: f64) 
     new_rate.clamp(target * 0.05, target)
 }
 
-pub fn format_speed(bps: f64) -> String {
-    if bps < 1.0 {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpeedUnit {
+    #[default]
+    Bits,
+    Bytes,
+}
+
+impl SpeedUnit {
+    pub fn from_bits_mode(bits_mode: bool) -> Self {
+        if bits_mode {
+            Self::Bits
+        } else {
+            Self::Bytes
+        }
+    }
+
+    pub fn is_bits(self) -> bool {
+        matches!(self, Self::Bits)
+    }
+}
+
+pub fn format_speed(bytes_per_sec: f64, unit: SpeedUnit) -> String {
+    match unit {
+        SpeedUnit::Bytes => format_speed_bytes(bytes_per_sec),
+        SpeedUnit::Bits => format_speed_bits(bytes_per_sec * 8.0),
+    }
+}
+
+fn format_speed_bytes(bytes_per_sec: f64) -> String {
+    if bytes_per_sec < 1.0 {
         return "0 B/s".to_string();
     }
-    if bps < 1024.0 {
-        return format!("{bps:.0} B/s");
+    if bytes_per_sec < 1024.0 {
+        return format!("{bytes_per_sec:.0} B/s");
     }
-    let kb = bps / 1024.0;
+    let kb = bytes_per_sec / 1024.0;
     if kb < 1024.0 {
         return format!("{kb:.1} KB/s");
     }
     format!("{:.2} MB/s", kb / 1024.0)
+}
+
+fn format_speed_bits(bits_per_sec: f64) -> String {
+    if bits_per_sec < 1.0 {
+        return "0 b/s".to_string();
+    }
+    if bits_per_sec < 1000.0 {
+        return format!("{bits_per_sec:.0} b/s");
+    }
+    let kb = bits_per_sec / 1000.0;
+    if kb < 1000.0 {
+        return format!("{kb:.1} Kb/s");
+    }
+    format!("{:.2} Mb/s", kb / 1000.0)
+}
+
+pub fn format_limit_kibps(kibps: u32, unit: SpeedUnit) -> String {
+    match unit {
+        SpeedUnit::Bytes => kibps.to_string(),
+        SpeedUnit::Bits => {
+            let kbps = kibps as f64 * 1024.0 * 8.0 / 1000.0;
+            format!("{:.0}", kbps.round())
+        }
+    }
+}
+
+pub fn parse_limit_input(text: &str, unit: SpeedUnit) -> Option<u32> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(0);
+    }
+
+    match unit {
+        SpeedUnit::Bytes => text.parse::<u32>().ok(),
+        SpeedUnit::Bits => {
+            let kbps: f64 = text.parse().ok()?;
+            let kibps = (kbps * 1000.0 / 8.0 / 1024.0).round();
+            if !(0.0..=u32::MAX as f64).contains(&kibps) {
+                return None;
+            }
+            Some(kibps as u32)
+        }
+    }
+}
+
+pub fn format_limit_summary(kibps: u32, unit: SpeedUnit) -> String {
+    if kibps == 0 {
+        return "Off".to_string();
+    }
+    match unit {
+        SpeedUnit::Bytes => format!("{kibps} KB/s"),
+        SpeedUnit::Bits => format_speed(kibps as f64 * 1024.0, SpeedUnit::Bits),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,7 +359,7 @@ pub fn build_process_rows(
 
     let mut rows = vec![ProcessRow::global(global_rule)];
     for (name, pids) in groups {
-        let expanded = expanded_names.contains(&name);
+        let expanded = expanded_names.contains(&name.to_lowercase());
         let rule = first_existing_rule(&pids, rules);
         rows.push(ProcessRow {
             kind: RowKind::Group {
@@ -432,11 +513,29 @@ mod tests {
     }
 
     #[test]
-    fn speed_format_matches_existing_display() {
-        assert_eq!(format_speed(0.0), "0 B/s");
-        assert_eq!(format_speed(512.0), "512 B/s");
-        assert_eq!(format_speed(1536.0), "1.5 KB/s");
-        assert_eq!(format_speed(2.0 * 1024.0 * 1024.0), "2.00 MB/s");
+    fn speed_format_matches_byte_display() {
+        assert_eq!(format_speed(0.0, SpeedUnit::Bytes), "0 B/s");
+        assert_eq!(format_speed(512.0, SpeedUnit::Bytes), "512 B/s");
+        assert_eq!(format_speed(1536.0, SpeedUnit::Bytes), "1.5 KB/s");
+        assert_eq!(
+            format_speed(2.0 * 1024.0 * 1024.0, SpeedUnit::Bytes),
+            "2.00 MB/s"
+        );
+    }
+
+    #[test]
+    fn speed_format_matches_isp_bit_display() {
+        assert_eq!(format_speed(0.0, SpeedUnit::Bits), "0 b/s");
+        assert_eq!(format_speed(125.0, SpeedUnit::Bits), "1.0 Kb/s");
+        assert_eq!(format_speed(125_000.0, SpeedUnit::Bits), "1.00 Mb/s");
+    }
+
+    #[test]
+    fn limit_input_round_trips_between_units() {
+        assert_eq!(parse_limit_input("128", SpeedUnit::Bytes), Some(128));
+        assert_eq!(format_limit_kibps(128, SpeedUnit::Bytes), "128");
+        assert_eq!(parse_limit_input("1049", SpeedUnit::Bits), Some(128));
+        assert_eq!(format_limit_kibps(128, SpeedUnit::Bits), "1049");
     }
 
     #[test]
@@ -480,5 +579,40 @@ mod tests {
         ));
         assert_eq!(rows[1].dl_bps, 30.0);
         assert_eq!(rows[1].ul_bps, 3.0);
+    }
+
+    #[test]
+    fn expanded_state_matches_lowercase_keys() {
+        let processes = vec![
+            ProcessInfo {
+                pid: 1,
+                name: "Chrome.exe".into(),
+            },
+            ProcessInfo {
+                pid: 2,
+                name: "chrome.exe".into(),
+            },
+        ];
+        let expanded = HashSet::from(["chrome.exe".to_string()]);
+        let speeds = HashMap::from([(1, (10.0, 1.0)), (2, (20.0, 2.0))]);
+
+        let rows = build_process_rows(
+            &processes,
+            &expanded,
+            &HashMap::new(),
+            &speeds,
+            GlobalRule::default(),
+            SortColumn::Process,
+            SortDirection::Ascending,
+        );
+
+        assert!(matches!(
+            &rows[1].kind,
+            RowKind::Group {
+                expanded: true,
+                ..
+            }
+        ));
+        assert_eq!(rows.len(), 4);
     }
 }

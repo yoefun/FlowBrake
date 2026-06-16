@@ -1,11 +1,12 @@
 fn main() {
     println!("cargo:rerun-if-changed=ui/main.slint");
+    println!("cargo:rerun-if-changed=ui/window_chrome.slint");
     println!("cargo:rerun-if-changed=../../assets/app.ico");
     println!("cargo:rerun-if-changed=../../third_party/windivert/WinDivert.dll");
     println!("cargo:rerun-if-changed=../../third_party/windivert/WinDivert64.sys");
 
-    embed_windows_manifest();
     embed_windows_icon();
+    embed_windows_manifest();
     slint_build::compile("ui/main.slint").expect("failed to compile Slint UI");
 
     copy_runtime_artifacts();
@@ -15,13 +16,13 @@ fn embed_windows_manifest() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
-    if std::env::var("PROFILE").as_deref() != Ok("release") {
-        return;
-    }
 
+    // Let the MSVC linker generate the CRT dependency manifest, and only override
+    // the UAC execution level here. Embedding a standalone manifest resource
+    // replaces the CRT manifest and causes SxS error 14001 at launch.
     println!("cargo:rustc-link-arg-bin=flowbrake-ui=/MANIFEST:EMBED");
     println!(
-        "cargo:rustc-link-arg-bin=flowbrake-ui=/MANIFESTUAC:level='requireAdministrator' uiAccess='false'"
+        "cargo:rustc-link-arg-bin=flowbrake-ui=/MANIFESTUAC:level='asInvoker' uiAccess='false'"
     );
 }
 

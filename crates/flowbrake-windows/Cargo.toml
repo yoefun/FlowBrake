@@ -10,6 +10,9 @@ flowbrake-core = { path = "../flowbrake-core" }
 thiserror = "2"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }

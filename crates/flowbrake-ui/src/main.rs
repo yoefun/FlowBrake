@@ -1,4 +1,4 @@
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+#![cfg_attr(all(not(test), target_os = "windows"), windows_subsystem = "windows")]
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -6,10 +6,14 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use flowbrake_core::{
-    build_process_rows, compute_adaptive_rate, format_speed, Direction, GlobalRule,
-    ProcessRow as CoreProcessRow, ProcessRule, RollingAverage, RowKind, SortColumn, SortDirection,
+    build_process_rows, compute_adaptive_rate, format_limit_kibps, format_limit_summary,
+    format_speed, parse_limit_input, Direction, GlobalRule, ProcessRow as CoreProcessRow,
+    ProcessRule, RollingAverage, RowKind, SortColumn, SortDirection, SpeedUnit,
 };
-use flowbrake_windows::{get_network_processes, EngineCommand, NetworkEngine};
+use flowbrake_windows::{
+    get_network_processes, is_elevated, relaunch_as_admin, EngineCommand, NetworkEngine,
+    RelaunchResult,
+};
 use slint::{
     CloseRequestResponse, ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel,
 };
@@ -17,6 +21,11 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
     Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
+
+mod settings;
+mod window_chrome;
+
+use settings::AppSettings;
 
 slint::include_modules!();
 
@@ -37,10 +46,12 @@ struct AppState {
     suppress_table_refresh_until: Option<Instant>,
     limit_editing: bool,
     selected: Option<RowSelection>,
+    speed_unit: SpeedUnit,
+    last_row_click: Option<(i32, Instant)>,
 }
 
 impl AppState {
-    fn new() -> Self {
+    fn new(settings: AppSettings) -> Self {
         Self {
             engine: NetworkEngine::from_current_exe_dir(),
             expanded: HashSet::new(),
@@ -58,7 +69,13 @@ impl AppState {
             suppress_table_refresh_until: None,
             limit_editing: false,
             selected: None,
+            speed_unit: SpeedUnit::from_bits_mode(settings.speed_unit_bits),
+            last_row_click: None,
         }
+    }
+
+    fn set_speed_unit(&mut self, unit: SpeedUnit) {
+        self.speed_unit = unit;
     }
 
     fn rebuild_rows(&mut self) {
@@ -107,21 +124,53 @@ impl AppState {
         }
     }
 
-    fn expand_all(&mut self) {
-        for process in get_network_processes(self.rules.keys().copied()) {
-            self.expanded.insert(process.name);
-        }
-    }
-
-    fn collapse_all(&mut self) {
-        self.expanded.clear();
-    }
-
     fn select_row(&mut self, row_index: i32) {
         self.selected = self
             .rows
             .get(row_index as usize)
             .map(|row| RowSelection::from(&row.kind));
+    }
+
+    fn handle_row_click(&mut self, row_index: i32) -> bool {
+        let now = Instant::now();
+        if let Some((last_index, last_time)) = self.last_row_click {
+            if last_index == row_index && now.duration_since(last_time) < Duration::from_millis(400)
+            {
+                self.last_row_click = None;
+                return true;
+            }
+        }
+        self.last_row_click = Some((row_index, now));
+        false
+    }
+
+    fn toggle_row_expanded(&mut self, row_index: i32) {
+        let Some(row) = self.rows.get(row_index as usize).cloned() else {
+            return;
+        };
+        let RowKind::Group {
+            process_name,
+            pids,
+            expanded,
+        } = &row.kind
+        else {
+            return;
+        };
+        if pids.len() <= 1 {
+            return;
+        }
+
+        let key = process_name.to_lowercase();
+        if *expanded {
+            self.expanded.remove(&key);
+            if let Some(RowSelection::Child(pid)) = &self.selected {
+                if pids.contains(pid) {
+                    self.selected = Some(RowSelection::Group(key));
+                }
+            }
+        } else {
+            self.expanded.insert(key);
+        }
     }
 
     fn clear_selection(&mut self) {
@@ -175,14 +224,14 @@ impl AppState {
         let Some(row) = self.selected_row().cloned() else {
             return;
         };
-        let Some(kbps) = parse_kbps(text) else {
+        let Some(kibps) = parse_limit_input(text, self.speed_unit) else {
             return;
         };
         self.suppress_table_refresh_until = Some(Instant::now() + Duration::from_secs(2));
         let mut rule = row.rule.clone();
         match direction {
-            "dl" => rule.download_kbps = kbps,
-            "ul" => rule.upload_kbps = kbps,
+            "dl" => rule.download_kbps = kibps,
+            "ul" => rule.upload_kbps = kibps,
             _ => return,
         }
         self.apply_rule_to_row(&row.kind, rule);
@@ -251,8 +300,8 @@ impl AppState {
             text: if snapshot.running {
                 format!(
                     "Interceptor running   v {}   ^ {}   |   Packets: {}   Dropped: {}",
-                    format_speed(self.global_dl_bps),
-                    format_speed(self.global_ul_bps),
+                    format_speed(self.global_dl_bps, self.speed_unit),
+                    format_speed(self.global_ul_bps, self.speed_unit),
                     snapshot.packets_processed,
                     snapshot.packets_dropped
                 )
@@ -504,86 +553,61 @@ fn make_tray_icon() -> Result<Icon, tray_icon::BadIcon> {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    if !is_elevated() && matches!(relaunch_as_admin(&[]), RelaunchResult::Started) {
+        return Ok(());
+    }
+
+    let settings = AppSettings::load();
     let app = AppWindow::new()?;
-    let state = Rc::new(RefCell::new(AppState::new()));
+    app.set_window_maximized(app.window().is_maximized());
+    app.set_speed_unit_bits(settings.speed_unit_bits);
+    let _ = window_chrome::apply_window_appearance(app.window());
+    let state = Rc::new(RefCell::new(AppState::new(settings)));
 
     render_rows(&app, &state);
 
     {
         let app_weak = app.as_weak();
         let state = Rc::clone(&state);
-        app.on_start_requested(move || {
-            let app = app_weak.unwrap();
-            match state.borrow_mut().start() {
-                Ok(()) => {
-                    app.set_running(true);
-                    app.set_status_text("Interceptor running".into());
-                }
-                Err(err) => {
-                    app.set_running(false);
-                    app.set_status_text(err.into());
-                }
-            }
-        });
-    }
-
-    {
-        let app_weak = app.as_weak();
-        let state = Rc::clone(&state);
-        app.on_stop_requested(move || {
-            let app = app_weak.unwrap();
-            state.borrow_mut().stop();
-            state.borrow().set_tray_visible(false);
-            app.set_running(false);
-            app.set_status_text("Interceptor stopped".into());
-            render_rows(&app, &state);
-        });
-    }
-
-    {
-        let app_weak = app.as_weak();
-        let state = Rc::clone(&state);
         app.window().on_close_requested(move || {
             let app = app_weak.unwrap();
-            let mut state = state.borrow_mut();
-            if state.engine.is_running() {
-                state.set_tray_visible(true);
-                CloseRequestResponse::HideWindow
-            } else {
-                state.full_exit();
-                let _ = app.hide();
-                slint::quit_event_loop().ok();
-                CloseRequestResponse::HideWindow
-            }
+            handle_close_request(&app, &state)
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        app.on_window_drag_requested(move || {
+            let app = app_weak.unwrap();
+            let _ = window_chrome::start_window_drag(app.window());
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        app.on_window_minimize_requested(move || {
+            let app = app_weak.unwrap();
+            app.window().set_minimized(true);
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        app.on_window_maximize_toggle_requested(move || {
+            let app = app_weak.unwrap();
+            let next_maximized = !app.window().is_maximized();
+            app.window().set_maximized(next_maximized);
+            app.set_window_maximized(app.window().is_maximized());
+            let _ = window_chrome::apply_window_appearance(app.window());
         });
     }
 
     {
         let app_weak = app.as_weak();
         let state = Rc::clone(&state);
-        app.on_refresh_requested(move || {
+        app.on_window_close_requested(move || {
             let app = app_weak.unwrap();
-            render_rows(&app, &state);
-        });
-    }
-
-    {
-        let app_weak = app.as_weak();
-        let state = Rc::clone(&state);
-        app.on_collapse_all_requested(move || {
-            let app = app_weak.unwrap();
-            state.borrow_mut().collapse_all();
-            render_rows(&app, &state);
-        });
-    }
-
-    {
-        let app_weak = app.as_weak();
-        let state = Rc::clone(&state);
-        app.on_expand_all_requested(move || {
-            let app = app_weak.unwrap();
-            state.borrow_mut().expand_all();
-            render_rows(&app, &state);
+            let _ = handle_close_request(&app, &state);
         });
     }
 
@@ -592,7 +616,12 @@ fn main() -> Result<(), slint::PlatformError> {
         let state = Rc::clone(&state);
         app.on_row_clicked(move |row_index| {
             let app = app_weak.unwrap();
-            state.borrow_mut().select_row(row_index);
+            let is_double_click = state.borrow_mut().handle_row_click(row_index);
+            if is_double_click {
+                state.borrow_mut().toggle_row_expanded(row_index);
+            } else {
+                state.borrow_mut().select_row(row_index);
+            }
             render_rows(&app, &state);
         });
     }
@@ -653,6 +682,37 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    {
+        let app_weak = app.as_weak();
+        let state = Rc::clone(&state);
+        app.on_speed_unit_bits_changed(move |bits_mode| {
+            let app = app_weak.unwrap();
+            state
+                .borrow_mut()
+                .set_speed_unit(SpeedUnit::from_bits_mode(bits_mode));
+            app.set_speed_unit_bits(bits_mode);
+            let settings = AppSettings {
+                speed_unit_bits: bits_mode,
+            };
+            if let Err(err) = settings.save() {
+                app.set_status_text(format!("Failed to save settings: {err}").into());
+            }
+            render_rows(&app, &state);
+        });
+    }
+
+    let auto_start_timer = Timer::default();
+    {
+        let app_weak = app.as_weak();
+        let state = Rc::clone(&state);
+        auto_start_timer.start(TimerMode::SingleShot, Duration::from_millis(0), move || {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            apply_engine_start(&app, &state);
+        });
+    }
+
     let timer = Timer::default();
     {
         let app_weak = app.as_weak();
@@ -660,6 +720,7 @@ fn main() -> Result<(), slint::PlatformError> {
         timer.start(TimerMode::Repeated, Duration::from_secs(1), move || {
             let app = app_weak.unwrap();
             let status = state.borrow_mut().tick();
+            app.set_window_maximized(app.window().is_maximized());
             app.set_running(status.running);
             app.set_status_text(status.text.into());
             if state.borrow().can_refresh_table() {
@@ -683,8 +744,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 Some(TrayAction::Open) => {
                     state.borrow().set_tray_visible(false);
                     let _ = app.show();
+                    app.set_window_maximized(app.window().is_maximized());
+                    let _ = window_chrome::apply_window_appearance(app.window());
                 }
                 Some(TrayAction::Exit) => {
+                    apply_engine_stop(&app, &state);
                     state.borrow_mut().full_exit();
                     let _ = app.hide();
                     slint::quit_event_loop().ok();
@@ -697,10 +761,49 @@ fn main() -> Result<(), slint::PlatformError> {
     app.run()
 }
 
+fn apply_engine_start(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
+    match state.borrow_mut().start() {
+        Ok(()) => {
+            app.set_running(true);
+            app.set_status_text("Interceptor running".into());
+        }
+        Err(err) => {
+            app.set_running(false);
+            app.set_status_text(err.into());
+        }
+    }
+}
+
+fn apply_engine_stop(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
+    state.borrow_mut().stop();
+    state.borrow().set_tray_visible(false);
+    app.set_running(false);
+    app.set_status_text("Interceptor stopped".into());
+    render_rows(app, state);
+}
+
+fn handle_close_request(app: &AppWindow, state: &Rc<RefCell<AppState>>) -> CloseRequestResponse {
+    if state.borrow().engine.is_running() {
+        state.borrow_mut().set_tray_visible(true);
+        let _ = app.hide();
+        CloseRequestResponse::HideWindow
+    } else {
+        apply_engine_stop(app, state);
+        state.borrow_mut().full_exit();
+        let _ = app.hide();
+        slint::quit_event_loop().ok();
+        CloseRequestResponse::HideWindow
+    }
+}
+
 fn render_rows(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     let mut state_ref = state.borrow_mut();
     state_ref.rebuild_rows();
-    let rows: Vec<ProcessRow> = state_ref.rows.iter().map(to_ui_row).collect();
+    let rows: Vec<ProcessRow> = state_ref
+        .rows
+        .iter()
+        .map(|row| to_ui_row(row, state_ref.speed_unit))
+        .collect();
     let selected_row_index = state_ref.selected_row_index();
     update_summary_panel(app, &state_ref);
     app.set_rows(ModelRc::new(VecModel::from(rows)));
@@ -726,12 +829,12 @@ fn update_summary_panel(app: &AppWindow, state: &AppState) {
     app.set_summary_throughput(
         format!(
             "DL {} / UL {}",
-            format_speed(state.global_dl_bps),
-            format_speed(state.global_ul_bps)
+            format_speed(state.global_dl_bps, state.speed_unit),
+            format_speed(state.global_ul_bps, state.speed_unit)
         )
         .into(),
     );
-    app.set_summary_global_limit(global_limit_summary(&state.global_rule).into());
+    app.set_summary_global_limit(global_limit_summary(&state.global_rule, state.speed_unit).into());
     app.set_summary_process_limits(process_limits.to_string().into());
     app.set_summary_blocked(blocked.to_string().into());
     app.set_summary_adaptive(adaptive.to_string().into());
@@ -792,12 +895,12 @@ fn update_selected_sidebar(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     app.set_selected_kind(kind.into());
     app.set_selected_pid(pid.into());
     app.set_selected_pids(pids.into());
-    app.set_selected_dl_speed(format_speed(row.dl_bps).into());
-    app.set_selected_ul_speed(format_speed(row.ul_bps).into());
+    app.set_selected_dl_speed(format_speed(row.dl_bps, state.speed_unit).into());
+    app.set_selected_ul_speed(format_speed(row.ul_bps, state.speed_unit).into());
     app.set_selected_limit_dl(row.rule.limit_download);
-    app.set_selected_dl_limit(limit_text(row.rule.download_kbps));
+    app.set_selected_dl_limit(limit_text(row.rule.download_kbps, state.speed_unit));
     app.set_selected_limit_ul(row.rule.limit_upload);
-    app.set_selected_ul_limit(limit_text(row.rule.upload_kbps));
+    app.set_selected_ul_limit(limit_text(row.rule.upload_kbps, state.speed_unit));
     app.set_selected_block(row.rule.block_all);
     app.set_selected_adaptive(row.rule.adaptive);
 }
@@ -812,7 +915,7 @@ fn join_pids(pids: &[u32]) -> String {
         .join(", ")
 }
 
-fn to_ui_row(row: &CoreProcessRow) -> ProcessRow {
+fn to_ui_row(row: &CoreProcessRow, unit: SpeedUnit) -> ProcessRow {
     let (process, pid, is_global, is_group, depth) = match &row.kind {
         RowKind::Global => (
             SharedString::from("GLOBAL (all traffic)"),
@@ -860,12 +963,12 @@ fn to_ui_row(row: &CoreProcessRow) -> ProcessRow {
     ProcessRow {
         process,
         pid,
-        dl_speed: SharedString::from(format_speed(row.dl_bps)),
-        ul_speed: SharedString::from(format_speed(row.ul_bps)),
+        dl_speed: SharedString::from(format_speed(row.dl_bps, unit)),
+        ul_speed: SharedString::from(format_speed(row.ul_bps, unit)),
         limit_dl: row.rule.limit_download,
-        dl_limit: limit_display_text(row.rule.limit_download, row.rule.download_kbps),
+        dl_limit: limit_display_text(row.rule.limit_download, row.rule.download_kbps, unit),
         limit_ul: row.rule.limit_upload,
-        ul_limit: limit_display_text(row.rule.limit_upload, row.rule.upload_kbps),
+        ul_limit: limit_display_text(row.rule.limit_upload, row.rule.upload_kbps, unit),
         block: row.rule.block_all,
         adaptive: row.rule.adaptive,
         is_global,
@@ -874,44 +977,36 @@ fn to_ui_row(row: &CoreProcessRow) -> ProcessRow {
     }
 }
 
-fn limit_text(kbps: u32) -> SharedString {
-    if kbps > 0 {
-        SharedString::from(kbps.to_string())
+fn limit_text(kibps: u32, unit: SpeedUnit) -> SharedString {
+    if kibps > 0 {
+        SharedString::from(format_limit_kibps(kibps, unit))
     } else {
         SharedString::from("")
     }
 }
 
-fn limit_display_text(enabled: bool, kbps: u32) -> SharedString {
-    if enabled && kbps > 0 {
-        SharedString::from(kbps.to_string())
+fn limit_display_text(enabled: bool, kibps: u32, unit: SpeedUnit) -> SharedString {
+    if enabled && kibps > 0 {
+        SharedString::from(format_limit_kibps(kibps, unit))
     } else {
         SharedString::from("Off")
     }
 }
 
-fn global_limit_summary(rule: &GlobalRule) -> String {
+fn global_limit_summary(rule: &GlobalRule, unit: SpeedUnit) -> String {
     format!(
         "DL {} / UL {}",
-        limit_summary_text(rule.limit_download, rule.download_kbps),
-        limit_summary_text(rule.limit_upload, rule.upload_kbps)
+        limit_summary_text(rule.limit_download, rule.download_kbps, unit),
+        limit_summary_text(rule.limit_upload, rule.upload_kbps, unit)
     )
 }
 
-fn limit_summary_text(enabled: bool, kbps: u32) -> String {
-    if enabled && kbps > 0 {
-        format!("{kbps} KB/s")
+fn limit_summary_text(enabled: bool, kibps: u32, unit: SpeedUnit) -> String {
+    if enabled && kibps > 0 {
+        format_limit_summary(kibps, unit)
     } else {
         "Off".to_string()
     }
-}
-
-fn parse_kbps(text: &str) -> Option<u32> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Some(0);
-    }
-    text.parse::<u32>().ok()
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 import { CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { TitleBar, SettingsDropdown } from "window_chrome.slint";
 
 export struct ProcessRow {
     process: string,
@@ -25,12 +26,6 @@ component Cell inherits Rectangle {
     width: root.cell-width;
     height: 32px;
 
-    TouchArea {
-        clicked => {
-            root.clicked();
-        }
-    }
-
     Text {
         text: root.text;
         width: parent.width;
@@ -41,6 +36,12 @@ component Cell inherits Rectangle {
         vertical-alignment: center;
         horizontal-alignment: left;
         overflow: elide;
+    }
+
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
     }
 }
 
@@ -93,12 +94,6 @@ component LimitDisplayCell inherits Rectangle {
     width: root.cell-width;
     height: 32px;
 
-    TouchArea {
-        clicked => {
-            root.clicked();
-        }
-    }
-
     HorizontalLayout {
         spacing: 8px;
         padding-left: 0px;
@@ -135,39 +130,11 @@ component LimitDisplayCell inherits Rectangle {
             }
         }
     }
-}
-
-component ActionButton inherits Rectangle {
-    in property <string> text;
-    in property <bool> enabled: true;
-    in property <color> background-color: #315f90;
-    in property <color> foreground-color: #ffffff;
-    in property <length> button-width: 92px;
-    callback clicked();
-    width: root.button-width;
-    height: 32px;
-    background: root.enabled ? root.background-color : #e7ebf0;
-    border-color: root.enabled ? root.background-color : #d3dae3;
-    border-width: 1px;
-    border-radius: 4px;
 
     TouchArea {
         clicked => {
-            if (root.enabled) {
-                root.clicked();
-            }
+            root.clicked();
         }
-    }
-
-    Text {
-        text: root.text;
-        width: parent.width;
-        height: parent.height;
-        color: root.enabled ? root.foreground-color : #8a95a3;
-        font-size: 12px;
-        font-weight: 600;
-        vertical-alignment: center;
-        horizontal-alignment: center;
     }
 }
 
@@ -289,9 +256,13 @@ component SidebarInput inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    width: 1180px;
-    height: 700px;
+    preferred-width: 1180px;
+    preferred-height: 700px;
+    min-width: 900px;
+    min-height: 500px;
     title: "FlowBrake";
+    no-frame: true;
+    resize-border-width: 8px;
 
     in property <[ProcessRow]> rows;
     in property <string> status-text: "Interceptor stopped";
@@ -310,23 +281,35 @@ export component AppWindow inherits Window {
     in property <string> selected-ul-limit: "";
     in property <bool> selected-block: false;
     in property <bool> selected-adaptive: false;
-    in property <string> summary-throughput: "DL 0 B/s / UL 0 B/s";
+    in property <string> summary-throughput: "DL 0 b/s / UL 0 b/s";
     in property <string> summary-global-limit: "DL Off / UL Off";
     in property <string> summary-process-limits: "0";
     in property <string> summary-blocked: "0";
     in property <string> summary-adaptive: "0";
+    in property <bool> window-maximized: false;
+    in property <bool> speed-unit-bits: true;
+    in-out property <bool> settings-open: false;
 
-    callback start-requested();
-    callback stop-requested();
-    callback refresh-requested();
-    callback collapse-all-requested();
-    callback expand-all-requested();
+    property <length> settings-menu-x: root.width - 358px;
+
+    property <string> dl-limit-header: root.speed-unit-bits ? "DL Limit Kb/s" : "DL Limit KB/s";
+    property <string> ul-limit-header: root.speed-unit-bits ? "UL Limit Kb/s" : "UL Limit KB/s";
+    property <string> dl-limit-label: root.speed-unit-bits ? "Download Kb/s" : "Download KB/s";
+    property <string> ul-limit-label: root.speed-unit-bits ? "Upload Kb/s" : "Upload KB/s";
+    // Global row is 36px; all other rows are 32px.
+    property <length> table-viewport-height: root.rows.length > 0 ? root.rows.length * 32px + 4px : 0px;
+
+    callback window-drag-requested();
+    callback window-minimize-requested();
+    callback window-maximize-toggle-requested();
+    callback window-close-requested();
     callback row-clicked(int);
     callback selection-cleared();
     callback bool-rule-edited(int, string, bool);
     callback selected-limit-submitted(string, string);
     callback selected-bool-rule-edited(string, bool);
     callback sidebar-focus-changed(bool);
+    callback speed-unit-bits-changed(bool);
 
     background: #f6f8fb;
 
@@ -344,56 +327,26 @@ export component AppWindow inherits Window {
     VerticalLayout {
         spacing: 0px;
 
-        Rectangle {
-            height: 48px;
-            background: #ffffff;
-
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                padding-top: 7px;
-                padding-bottom: 7px;
-                spacing: 8px;
-
-                ActionButton {
-                    text: "Start";
-                    enabled: !root.running;
-                    background-color: #167454;
-                    button-width: 84px;
-                    clicked => { root.clear-active-inputs(); root.start-requested(); }
-                }
-
-                ActionButton {
-                    text: "Stop";
-                    enabled: root.running;
-                    background-color: #b33a3a;
-                    button-width: 84px;
-                    clicked => { root.clear-active-inputs(); root.stop-requested(); }
-                }
-
-                Rectangle { width: 1px; background: #dfe4ec; }
-
-                ActionButton {
-                    text: "Refresh";
-                    background-color: #315f90;
-                    clicked => { root.clear-active-inputs(); root.refresh-requested(); }
-                }
-
-                ActionButton {
-                    text: "Collapse All";
-                    background-color: #56657a;
-                    button-width: 112px;
-                    clicked => { root.clear-active-inputs(); root.collapse-all-requested(); }
-                }
-
-                ActionButton {
-                    text: "Expand All";
-                    background-color: #56657a;
-                    button-width: 104px;
-                    clicked => { root.clear-active-inputs(); root.expand-all-requested(); }
-                }
-
-                Rectangle { horizontal-stretch: 1; }
+        TitleBar {
+            title: "FlowBrake";
+            maximized: root.window-maximized;
+            speed-unit-bits: root.speed-unit-bits;
+            settings-open <=> root.settings-open;
+            drag-requested => {
+                root.window-drag-requested();
+            }
+            minimize-requested => {
+                root.window-minimize-requested();
+            }
+            maximize-toggle-requested => {
+                root.window-maximize-toggle-requested();
+            }
+            close-requested => {
+                root.window-close-requested();
+            }
+            speed-unit-bits-changed(bits) => {
+                root.clear-active-inputs();
+                root.speed-unit-bits-changed(bits);
             }
         }
 
@@ -419,8 +372,8 @@ export component AppWindow inherits Window {
                 HeaderCell { text: "PID"; cell-width: 64px; }
                 HeaderCell { text: "DL Speed"; cell-width: 104px; }
                 HeaderCell { text: "UL Speed"; cell-width: 104px; }
-                HeaderCell { text: "DL Limit KB/s"; cell-width: 132px; }
-                HeaderCell { text: "UL Limit KB/s"; cell-width: 132px; }
+                HeaderCell { text: root.dl-limit-header; cell-width: 132px; }
+                HeaderCell { text: root.ul-limit-header; cell-width: 132px; }
                 HeaderCell { text: "Block"; cell-width: 64px; }
                 HeaderCell { text: "Adaptive"; cell-width: 82px; }
             }
@@ -428,19 +381,12 @@ export component AppWindow inherits Window {
 
         HorizontalLayout {
             spacing: 0px;
-            height: root.height - 114px;
+            vertical-stretch: 1;
 
             ScrollView {
                 viewport-width: parent.width;
-                viewport-height: parent.height;
+                viewport-height: root.table-viewport-height;
                 horizontal-stretch: 1;
-
-                TouchArea {
-                    clicked => {
-                        root.clear-active-inputs();
-                        root.selection-cleared();
-                    }
-                }
 
                 VerticalLayout {
                     spacing: 0px;
@@ -584,7 +530,7 @@ export component AppWindow inherits Window {
                     }
 
                     SidebarInput {
-                        label: "Download KB/s";
+                        label: root.dl-limit-label;
                         value: root.selected-dl-limit;
                         submitted(value) => { root.selected-limit-submitted("dl", value); }
                         focus-changed(value) => { root.sidebar-focus-changed(value); }
@@ -597,7 +543,7 @@ export component AppWindow inherits Window {
                     }
 
                     SidebarInput {
-                        label: "Upload KB/s";
+                        label: root.ul-limit-label;
                         value: root.selected-ul-limit;
                         submitted(value) => { root.selected-limit-submitted("ul", value); }
                         focus-changed(value) => { root.sidebar-focus-changed(value); }
@@ -652,6 +598,32 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
                 horizontal-alignment: left;
                 overflow: elide;
+            }
+        }
+    }
+
+    if (root.settings-open) : Rectangle {
+        width: 100%;
+        height: 100%;
+        z: 1000;
+
+        dismiss-hit := TouchArea {
+            clicked => {
+                root.settings-open = false;
+            }
+        }
+
+        SettingsDropdown {
+            x: root.settings-menu-x;
+            y: 36px;
+            z: 1;
+            speed-unit-bits: root.speed-unit-bits;
+            speed-unit-bits-changed(bits) => {
+                root.clear-active-inputs();
+                root.speed-unit-bits-changed(bits);
+            }
+            close-requested => {
+                root.settings-open = false;
             }
         }
     }

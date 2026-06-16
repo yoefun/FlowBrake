@@ -1359,9 +1359,11 @@ version = "0.1.0"
 dependencies = [
  "flowbrake-core",
  "flowbrake-windows",
+ "raw-window-handle",
  "slint",
  "slint-build",
  "tray-icon",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4263,6 +4265,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "pin-weak",
+ "raw-window-handle",
  "slint-macros",
  "unicode-segmentation",
  "vtable",
