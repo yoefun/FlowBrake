@@ -416,7 +416,9 @@ impl AppState {
                 self.engine
                     .apply(EngineCommand::SetGlobalRule(runtime_rule(&rule)));
             }
-            RowKind::Group { process_name, pids, .. } => {
+            RowKind::Group {
+                process_name, pids, ..
+            } => {
                 let key = process_name.to_lowercase();
                 if rule.has_any_rule() {
                     self.name_rules.insert(key, rule.clone());

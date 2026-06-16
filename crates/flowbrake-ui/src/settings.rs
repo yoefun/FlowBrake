@@ -227,7 +227,11 @@ fn parse_bool(value: &str) -> bool {
 }
 
 fn bool_text(value: bool) -> &'static str {
-    if value { "true" } else { "false" }
+    if value {
+        "true"
+    } else {
+        "false"
+    }
 }
 
 fn parse_f32(value: &str) -> Option<f32> {

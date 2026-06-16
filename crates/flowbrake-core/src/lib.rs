@@ -608,10 +608,7 @@ mod tests {
 
         assert!(matches!(
             &rows[1].kind,
-            RowKind::Group {
-                expanded: true,
-                ..
-            }
+            RowKind::Group { expanded: true, .. }
         ));
         assert_eq!(rows.len(), 4);
     }
