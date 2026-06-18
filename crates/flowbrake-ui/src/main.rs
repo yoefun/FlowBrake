@@ -11,8 +11,8 @@ use flowbrake_core::{
     ProcessRule, RollingAverage, RowKind, SortColumn, SortDirection, SpeedUnit,
 };
 use flowbrake_windows::{
-    get_network_processes, is_elevated, relaunch_as_admin, EngineCommand, NetworkEngine,
-    RelaunchResult,
+    get_network_processes, is_elevated, relaunch_as_admin, show_admin_required_message,
+    EngineCommand, NetworkEngine, RelaunchResult,
 };
 use slint::{
     CloseRequestResponse, ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel,
@@ -48,13 +48,16 @@ struct AppState {
     limit_editing: bool,
     selected: Option<RowSelection>,
     speed_unit: SpeedUnit,
+    ipv6_enabled: bool,
     last_row_click: Option<(i32, Instant)>,
 }
 
 impl AppState {
     fn new(settings: AppSettings) -> Self {
+        let engine = NetworkEngine::from_current_exe_dir();
+        engine.set_ipv6_enabled(settings.ipv6_enabled);
         Self {
-            engine: NetworkEngine::from_current_exe_dir(),
+            engine,
             expanded: settings.expanded,
             rules: HashMap::new(),
             name_rules: settings.name_rules,
@@ -72,6 +75,7 @@ impl AppState {
             limit_editing: false,
             selected: None,
             speed_unit: SpeedUnit::from_bits_mode(settings.speed_unit_bits),
+            ipv6_enabled: settings.ipv6_enabled,
             last_row_click: None,
         }
     }
@@ -83,6 +87,7 @@ impl AppState {
     fn to_settings(&self) -> AppSettings {
         AppSettings {
             speed_unit_bits: matches!(self.speed_unit, SpeedUnit::Bits),
+            ipv6_enabled: self.ipv6_enabled,
             global_rule: self.global_rule.clone(),
             name_rules: self.name_rules.clone(),
             expanded: self.expanded.clone(),
@@ -90,8 +95,22 @@ impl AppState {
         }
     }
 
+    fn set_ipv6_enabled(&mut self, enabled: bool) -> Result<(), String> {
+        if self.ipv6_enabled == enabled {
+            return Ok(());
+        }
+        self.ipv6_enabled = enabled;
+        self.engine.set_ipv6_enabled(enabled);
+        if self.engine.is_running() {
+            self.engine.stop();
+            self.push_all_rules();
+            self.engine.start().map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    }
+
     fn sync_name_rules_to_pids(&mut self) {
-        let processes = get_network_processes(self.rules.keys().copied());
+        let processes = get_network_processes(self.rules.keys().copied(), self.ipv6_enabled);
         let mut added = Vec::new();
         for process in processes {
             let key = process.name.to_lowercase();
@@ -113,7 +132,7 @@ impl AppState {
 
     fn rebuild_rows(&mut self) {
         self.sync_name_rules_to_pids();
-        let processes = get_network_processes(self.rules.keys().copied());
+        let processes = get_network_processes(self.rules.keys().copied(), self.ipv6_enabled);
         self.rows = build_process_rows(
             &processes,
             &self.expanded,
@@ -130,6 +149,7 @@ impl AppState {
     }
 
     fn start(&mut self) -> Result<(), String> {
+        self.engine.set_ipv6_enabled(self.ipv6_enabled);
         self.push_all_rules();
         self.engine.start().map_err(|err| err.to_string())
     }
@@ -603,8 +623,23 @@ fn persist_settings(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    if !is_elevated() && matches!(relaunch_as_admin(&[]), RelaunchResult::Started) {
-        return Ok(());
+    if !is_elevated() {
+        match relaunch_as_admin(&[]) {
+            RelaunchResult::Started => return Ok(()),
+            RelaunchResult::Cancelled => {
+                show_admin_required_message(
+                    "FlowBrake needs administrator approval to intercept network traffic.\n\
+                     Please run it again and choose Yes on the UAC prompt.",
+                );
+                return Ok(());
+            }
+            RelaunchResult::Failed(err) => {
+                show_admin_required_message(&format!(
+                    "FlowBrake could not request administrator privileges.\n{err}"
+                ));
+                return Ok(());
+            }
+        }
     }
 
     let settings = AppSettings::load();
@@ -612,6 +647,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let app = AppWindow::new()?;
     app.set_window_maximized(window_settings.window_maximized);
     app.set_speed_unit_bits(settings.speed_unit_bits);
+    app.set_ipv6_enabled(settings.ipv6_enabled);
     let state = Rc::new(RefCell::new(AppState::new(settings)));
 
     render_rows(&app, &state);
@@ -649,7 +685,8 @@ fn main() -> Result<(), slint::PlatformError> {
             let next_maximized = !app.window().is_maximized();
             app.window().set_maximized(next_maximized);
             app.set_window_maximized(app.window().is_maximized());
-            let _ = window_chrome::apply_window_appearance(app.window());
+            let mut appearance_sync = window_chrome::WindowAppearanceSync::new(app.window());
+            let _ = appearance_sync.force(app.window());
             persist_settings(&app, &state);
         });
     }
@@ -752,16 +789,63 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    {
+        let app_weak = app.as_weak();
+        let state = Rc::clone(&state);
+        app.on_ipv6_enabled_changed(move |enabled| {
+            let app = app_weak.unwrap();
+            match state.borrow_mut().set_ipv6_enabled(enabled) {
+                Ok(()) => {
+                    app.set_ipv6_enabled(enabled);
+                    app.set_running(state.borrow().engine.is_running());
+                    persist_settings(&app, &state);
+                    render_rows(&app, &state);
+                }
+                Err(err) => {
+                    app.set_status_text(err.into());
+                }
+            }
+        });
+    }
+
     let init_window_timer = Timer::default();
     {
         let app_weak = app.as_weak();
+        let mut appearance_sync = window_chrome::WindowAppearanceSync::new(app.window());
         init_window_timer.start(TimerMode::SingleShot, Duration::from_millis(0), move || {
             let Some(app) = app_weak.upgrade() else {
                 return;
             };
             window_settings.apply_window(app.window());
             app.set_window_maximized(app.window().is_maximized());
-            let _ = window_chrome::apply_window_appearance(app.window());
+            let _ = appearance_sync.force(app.window());
+        });
+    }
+
+    let init_window_appearance_timer = Timer::default();
+    {
+        let app_weak = app.as_weak();
+        init_window_appearance_timer.start(TimerMode::SingleShot, Duration::from_millis(100), move || {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            let mut appearance_sync = window_chrome::WindowAppearanceSync::new(app.window());
+            let _ = appearance_sync.force(app.window());
+        });
+    }
+
+    let appearance_timer = Timer::default();
+    {
+        let app_weak = app.as_weak();
+        let mut appearance_sync = window_chrome::WindowAppearanceSync::new(app.window());
+        appearance_timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            if app.window().is_minimized() {
+                return;
+            }
+            let _ = appearance_sync.sync_if_changed(app.window());
         });
     }
 
@@ -809,7 +893,8 @@ fn main() -> Result<(), slint::PlatformError> {
                     state.borrow().set_tray_visible(false);
                     let _ = app.show();
                     app.set_window_maximized(app.window().is_maximized());
-                    let _ = window_chrome::apply_window_appearance(app.window());
+                    let mut appearance_sync = window_chrome::WindowAppearanceSync::new(app.window());
+                    let _ = appearance_sync.force(app.window());
                 }
                 Some(TrayAction::Exit) => {
                     persist_settings(&app, &state);
@@ -827,6 +912,14 @@ fn main() -> Result<(), slint::PlatformError> {
 }
 
 fn apply_engine_start(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
+    if !is_elevated() {
+        app.set_running(false);
+        app.set_status_text(
+            "Administrator privileges are required to start the interceptor.".into(),
+        );
+        return;
+    }
+
     match state.borrow_mut().start() {
         Ok(()) => {
             app.set_running(true);

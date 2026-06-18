@@ -10,10 +10,11 @@ use thiserror::Error;
 
 use crate::elevation::runtime_dir;
 use crate::ip_helper::PortPidMap;
-use crate::packet::Ipv4Packet;
+use crate::packet::IpPacket;
 use crate::windivert::{WinDivert, WinDivertError};
 
-const FILTER: &str = "ip and (tcp or udp)";
+const FILTER_V4_ONLY: &str = "ip and (tcp or udp)";
+const FILTER_V4_V6: &str = "(ip or ipv6) and (tcp or udp)";
 const BUF_SIZE: usize = 65_535;
 const PORT_MAP_REFRESH: Duration = Duration::from_millis(1500);
 
@@ -64,6 +65,7 @@ pub struct NetworkEngine {
     exe_dir: PathBuf,
     state: Arc<EngineState>,
     stopping: Arc<AtomicBool>,
+    ipv6_enabled: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     active_divert: Option<WinDivert>,
 }
@@ -74,6 +76,7 @@ impl NetworkEngine {
             exe_dir: exe_dir.into(),
             state: Arc::new(EngineState::default()),
             stopping: Arc::new(AtomicBool::new(false)),
+            ipv6_enabled: Arc::new(AtomicBool::new(true)),
             worker: None,
             active_divert: None,
         }
@@ -89,22 +92,36 @@ impl NetworkEngine {
             .is_some_and(|worker| !worker.is_finished())
     }
 
+    pub fn ipv6_enabled(&self) -> bool {
+        self.ipv6_enabled.load(Ordering::Acquire)
+    }
+
+    pub fn set_ipv6_enabled(&self, enabled: bool) {
+        self.ipv6_enabled.store(enabled, Ordering::Release);
+    }
+
     pub fn start(&mut self) -> Result<(), EngineError> {
         if self.is_running() {
             return Err(EngineError::AlreadyRunning);
         }
 
-        let divert = WinDivert::open_from_dir(&self.exe_dir, FILTER)?;
+        let filter = if self.ipv6_enabled() {
+            FILTER_V4_V6
+        } else {
+            FILTER_V4_ONLY
+        };
+        let divert = WinDivert::open_from_dir(&self.exe_dir, filter)?;
         self.stopping.store(false, Ordering::Release);
         self.reset_runtime_counters();
 
         let state = Arc::clone(&self.state);
         let stopping = Arc::clone(&self.stopping);
+        let ipv6_enabled = Arc::clone(&self.ipv6_enabled);
         let worker_divert = divert.clone();
         self.worker = Some(
             thread::Builder::new()
                 .name("FlowBrake-Recv".to_string())
-                .spawn(move || recv_loop(worker_divert, state, stopping))
+                .spawn(move || recv_loop(worker_divert, state, stopping, ipv6_enabled))
                 .expect("failed to spawn packet worker"),
         );
         self.active_divert = Some(divert);
@@ -214,9 +231,14 @@ impl Drop for NetworkEngine {
     }
 }
 
-fn recv_loop(divert: WinDivert, state: Arc<EngineState>, stopping: Arc<AtomicBool>) {
+fn recv_loop(
+    divert: WinDivert,
+    state: Arc<EngineState>,
+    stopping: Arc<AtomicBool>,
+    ipv6_enabled: Arc<AtomicBool>,
+) {
     let mut packet_buffer = vec![0u8; BUF_SIZE];
-    let mut port_pid = PortPidMap::refresh();
+    let mut port_pid = PortPidMap::refresh(ipv6_enabled.load(Ordering::Acquire));
     let mut last_map_refresh = Instant::now();
     let mut buckets: HashMap<(u32, Direction), (TokenBucket, Instant)> = HashMap::new();
     let mut global_dl_bucket: Option<(TokenBucket, Instant)> = None;
@@ -229,27 +251,23 @@ fn recv_loop(divert: WinDivert, state: Arc<EngineState>, stopping: Arc<AtomicBoo
 
         state.packets_processed.fetch_add(1, Ordering::AcqRel);
 
-        if address.is_ipv6() {
-            let _ = divert.send(&packet_buffer[..read_len], &mut address);
-            continue;
-        }
-
         if last_map_refresh.elapsed() >= PORT_MAP_REFRESH {
-            port_pid = PortPidMap::refresh();
+            port_pid = PortPidMap::refresh(ipv6_enabled.load(Ordering::Acquire));
             last_map_refresh = Instant::now();
         }
 
+        let is_ipv6 = address.is_ipv6();
         let direction = if address.is_outbound() {
             Direction::Upload
         } else {
             Direction::Download
         };
-        let Some(packet) = Ipv4Packet::parse(&packet_buffer[..read_len]) else {
+        let Some(packet) = IpPacket::parse(&packet_buffer[..read_len], is_ipv6) else {
             let _ = divert.send(&packet_buffer[..read_len], &mut address);
             continue;
         };
 
-        let pid = port_pid.pid_for(packet.protocol, packet.local_port(direction));
+        let pid = port_pid.pid_for(packet.protocol, packet.local_port(direction), is_ipv6);
         let charge_len = packet.payload_len;
 
         if should_drop_global(

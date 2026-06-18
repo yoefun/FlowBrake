@@ -11,6 +11,7 @@ pub const MIN_WINDOW_WIDTH: f32 = 900.0;
 pub const MIN_WINDOW_HEIGHT: f32 = 500.0;
 
 const SPEED_UNIT_BITS_KEY: &str = "speed_unit_bits";
+const IPV6_ENABLED_KEY: &str = "ipv6_enabled";
 const WINDOW_WIDTH_KEY: &str = "window_width";
 const WINDOW_HEIGHT_KEY: &str = "window_height";
 const WINDOW_X_KEY: &str = "window_x";
@@ -21,6 +22,7 @@ const EXPANDED_KEY: &str = "expanded";
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppSettings {
     pub speed_unit_bits: bool,
+    pub ipv6_enabled: bool,
     pub window_width: f32,
     pub window_height: f32,
     pub window_x: f32,
@@ -35,6 +37,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             speed_unit_bits: true,
+            ipv6_enabled: true,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
             window_x: -1.0,
@@ -73,6 +76,9 @@ impl AppSettings {
             match key {
                 SPEED_UNIT_BITS_KEY => {
                     settings.speed_unit_bits = parse_bool(value);
+                }
+                IPV6_ENABLED_KEY => {
+                    settings.ipv6_enabled = parse_bool(value);
                 }
                 WINDOW_WIDTH_KEY => {
                     if let Some(width) = parse_f32(value) {
@@ -153,6 +159,10 @@ impl AppSettings {
         lines.push(format!(
             "{SPEED_UNIT_BITS_KEY}={}",
             bool_text(self.speed_unit_bits)
+        ));
+        lines.push(format!(
+            "{IPV6_ENABLED_KEY}={}",
+            bool_text(self.ipv6_enabled)
         ));
         lines.push(format!("{WINDOW_WIDTH_KEY}={}", self.window_width));
         lines.push(format!("{WINDOW_HEIGHT_KEY}={}", self.window_height));
@@ -296,6 +306,7 @@ mod tests {
     fn defaults_to_isp_bit_units() {
         let settings = AppSettings::default();
         assert!(settings.speed_unit_bits);
+        assert!(settings.ipv6_enabled);
         assert_eq!(settings.window_width, DEFAULT_WINDOW_WIDTH);
         assert_eq!(settings.window_height, DEFAULT_WINDOW_HEIGHT);
     }

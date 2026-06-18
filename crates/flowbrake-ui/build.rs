@@ -20,9 +20,12 @@ fn embed_windows_manifest() {
     // Let the MSVC linker generate the CRT dependency manifest, and only override
     // the UAC execution level here. Embedding a standalone manifest resource
     // replaces the CRT manifest and causes SxS error 14001 at launch.
+    //
+    // requireAdministrator ensures UAC runs at process creation. Runtime ShellExecute
+    // "runas" relaunch is unreliable after SmartScreen "Run anyway" on downloaded zips.
     println!("cargo:rustc-link-arg-bin=flowbrake-ui=/MANIFEST:EMBED");
     println!(
-        "cargo:rustc-link-arg-bin=flowbrake-ui=/MANIFESTUAC:level='asInvoker' uiAccess='false'"
+        "cargo:rustc-link-arg-bin=flowbrake-ui=/MANIFESTUAC:level='requireAdministrator' uiAccess='false'"
     );
 }
 

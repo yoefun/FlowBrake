@@ -65,10 +65,11 @@ copies these runtime files next to the executable:
 - `WinDivert.dll`
 - `WinDivert64.sys`
 
-The executable uses an `asInvoker` manifest so the UI can start normally. On
-launch, FlowBrake requests administrator approval through UAC when it needs to
-open the WinDivert interceptor. If approval is denied, the UI stays open but
-traffic interception remains unavailable.
+The executable uses a `requireAdministrator` manifest so Windows shows the UAC
+prompt when the app is launched. After bypassing SmartScreen on a downloaded
+zip, approve the UAC prompt so WinDivert can open the network interceptor. If
+administrator approval is denied, FlowBrake exits instead of starting without
+the privileges needed for traffic limiting.
 
 To create the release zip used by CI:
 

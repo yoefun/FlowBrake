@@ -1,5 +1,4 @@
 use std::ffi::c_void;
-use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::ptr;
@@ -84,12 +83,26 @@ pub fn relaunch_as_admin(extra_args: &[&str]) -> RelaunchResult {
         return RelaunchResult::Started;
     }
 
-    let err = io::Error::last_os_error();
-    let raw = err.raw_os_error().unwrap_or_default();
-    if raw == windows_sys::Win32::Foundation::ERROR_CANCELLED as i32 {
+    // ShellExecuteW returns the error code directly when it fails; GetLastError is unreliable.
+    if code == windows_sys::Win32::Foundation::ERROR_CANCELLED as isize {
         RelaunchResult::Cancelled
     } else {
-        RelaunchResult::Failed(ElevationError::Failed(raw))
+        RelaunchResult::Failed(ElevationError::Failed(code as i32))
+    }
+}
+
+pub fn show_admin_required_message(message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    let title = string_to_wide_null("FlowBrake");
+    let text = string_to_wide_null(message);
+    unsafe {
+        MessageBoxW(
+            ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
     }
 }
 

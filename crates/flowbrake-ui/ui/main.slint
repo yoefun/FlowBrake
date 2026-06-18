@@ -288,6 +288,7 @@ export component AppWindow inherits Window {
     in property <string> summary-adaptive: "0";
     in property <bool> window-maximized: false;
     in property <bool> speed-unit-bits: true;
+    in property <bool> ipv6-enabled: true;
     in-out property <bool> settings-open: false;
 
     property <length> settings-menu-x: root.width - 358px;
@@ -310,8 +311,12 @@ export component AppWindow inherits Window {
     callback selected-bool-rule-edited(string, bool);
     callback sidebar-focus-changed(bool);
     callback speed-unit-bits-changed(bool);
+    callback ipv6-enabled-changed(bool);
 
-    background: #f6f8fb;
+    // Transparent window background lets DWM rounded corners show through; the
+    // clipped chrome shell paints the visible surface.
+    background: transparent;
+    property <length> chrome-radius: root.window-maximized ? 0px : 8px;
 
     function clear-active-inputs() {
         focus-sink.focus();
@@ -324,7 +329,16 @@ export component AppWindow inherits Window {
         height: 0px;
     }
 
-    VerticalLayout {
+    chrome-shell := Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #f6f8fb;
+        border-radius: root.chrome-radius;
+        clip: true;
+        border-color: #dfe6ef;
+        border-width: root.window-maximized ? 0px : 1px;
+
+        VerticalLayout {
         spacing: 0px;
 
         TitleBar {
@@ -608,6 +622,7 @@ export component AppWindow inherits Window {
                 overflow: elide;
             }
         }
+        }
     }
 
     if (root.settings-open) : Rectangle {
@@ -626,9 +641,14 @@ export component AppWindow inherits Window {
             y: 36px;
             z: 1;
             speed-unit-bits: root.speed-unit-bits;
+            ipv6-enabled: root.ipv6-enabled;
             speed-unit-bits-changed(bits) => {
                 root.clear-active-inputs();
                 root.speed-unit-bits-changed(bits);
+            }
+            ipv6-enabled-changed(enabled) => {
+                root.clear-active-inputs();
+                root.ipv6-enabled-changed(enabled);
             }
             close-requested => {
                 root.settings-open = false;

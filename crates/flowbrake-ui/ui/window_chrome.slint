@@ -115,7 +115,9 @@ component SettingsMenuItem inherits Rectangle {
 
 export component SettingsDropdown inherits Rectangle {
     in property <bool> speed-unit-bits;
+    in property <bool> ipv6-enabled;
     callback speed-unit-bits-changed(bool);
+    callback ipv6-enabled-changed(bool);
     callback close-requested();
 
     width: 220px;
@@ -161,6 +163,48 @@ export component SettingsDropdown inherits Rectangle {
             selected: !root.speed-unit-bits;
             activate => {
                 root.speed-unit-bits-changed(false);
+                root.close-requested();
+            }
+        }
+
+        Rectangle {
+            height: 9px;
+
+            Rectangle {
+                y: 4px;
+                height: 1px;
+                background: #e4eaf2;
+            }
+        }
+
+        HorizontalLayout {
+            height: 18px;
+            padding-left: 12px;
+            padding-right: 12px;
+
+            Text {
+                text: "IPv6 support";
+                color: #65758b;
+                font-size: 11px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+        }
+
+        SettingsMenuItem {
+            text: "Enabled";
+            selected: root.ipv6-enabled;
+            activate => {
+                root.ipv6-enabled-changed(true);
+                root.close-requested();
+            }
+        }
+
+        SettingsMenuItem {
+            text: "Disabled";
+            selected: !root.ipv6-enabled;
+            activate => {
+                root.ipv6-enabled-changed(false);
                 root.close-requested();
             }
         }
