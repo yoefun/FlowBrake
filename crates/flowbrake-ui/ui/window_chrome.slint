@@ -132,12 +132,18 @@ component SettingsCheckItem inherits Rectangle {
         padding-left: 12px;
         padding-right: 12px;
         spacing: 10px;
-        alignment: center;
 
-        CheckBox {
-            checked: root.checked;
-            toggled => {
-                root.toggled(self.checked);
+        Rectangle {
+            width: 16px;
+            height: 16px;
+
+            CheckBox {
+                width: 16px;
+                height: 16px;
+                checked: root.checked;
+                toggled => {
+                    root.toggled(self.checked);
+                }
             }
         }
 

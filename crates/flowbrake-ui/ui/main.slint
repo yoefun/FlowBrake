@@ -106,7 +106,6 @@ component ProcessCell inherits Rectangle {
     in property <length> row-height: 32px;
     in property <color> foreground: #24303f;
     in property <bool> strong: false;
-    callback clicked();
     width: 280px;
     height: root.row-height;
 
@@ -162,12 +161,6 @@ component ProcessCell inherits Rectangle {
             vertical-stretch: 1;
         }
     }
-
-    TouchArea {
-        clicked => {
-            root.clicked();
-        }
-    }
 }
 
 component Cell inherits Rectangle {
@@ -175,7 +168,6 @@ component Cell inherits Rectangle {
     in property <length> cell-width: 80px;
     in property <color> foreground: #24303f;
     in property <bool> strong: false;
-    callback clicked();
     width: root.cell-width;
     height: 32px;
 
@@ -189,12 +181,6 @@ component Cell inherits Rectangle {
         vertical-alignment: center;
         horizontal-alignment: left;
         overflow: elide;
-    }
-
-    TouchArea {
-        clicked => {
-            root.clicked();
-        }
     }
 }
 
@@ -243,7 +229,6 @@ component LimitDisplayCell inherits Rectangle {
     in property <length> cell-width: 132px;
     in property <bool> highlighted: false;
     callback toggled(bool);
-    callback clicked();
     width: root.cell-width;
     height: 32px;
 
@@ -281,12 +266,6 @@ component LimitDisplayCell inherits Rectangle {
                 horizontal-alignment: left;
                 overflow: elide;
             }
-        }
-    }
-
-    TouchArea {
-        clicked => {
-            root.clicked();
         }
     }
 }
@@ -566,9 +545,16 @@ export component AppWindow inherits Window {
 
                         for row[index] in root.rows: Rectangle {
                             height: row.is_global ? 36px : 32px;
-                            background: index == root.selected-row ? #d4e7fa : (row.is_global ? #12304a : (row.is_group ? #e7eef7 : #f8fafc));
+                            background:
+                                index == root.selected-row
+                                    ? (row.is_global ? #b8d9f5 : #c5daf4)
+                                    : row-hit.has-hover
+                                        ? (row.is_global ? #173f61 : (row.is_group ? #dde7f3 : #edf2f8))
+                                        : (row.is_global ? #12304a : (row.is_group ? #e7eef7 : #f8fafc));
 
-                            TouchArea {
+                            row-hit := TouchArea {
+                                width: parent.width;
+                                height: parent.height;
                                 clicked => {
                                     root.clear-active-inputs();
                                     root.row-clicked(index);
@@ -592,10 +578,6 @@ export component AppWindow inherits Window {
                                     row-height: row.is_global ? 36px : 32px;
                                     foreground: row.is_global && index != root.selected-row ? white : #24303f;
                                     strong: row.is_global || row.is_group;
-                                    clicked => {
-                                        root.clear-active-inputs();
-                                        root.row-clicked(index);
-                                    }
                                 }
                                 Cell { text: row.pid; cell-width: 64px; foreground: row.is_global && index != root.selected-row ? white : #596579; }
                                 Cell { text: row.dl_speed; cell-width: 104px; foreground: row.is_global && index != root.selected-row ? white : #167454; }
@@ -605,7 +587,6 @@ export component AppWindow inherits Window {
                                     text: row.dl_limit;
                                     cell-width: 132px;
                                     highlighted: row.is_global && index != root.selected-row;
-                                    clicked => { root.clear-active-inputs(); root.row-clicked(index); }
                                     toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "limit_dl", value); }
                                 }
                                 LimitDisplayCell {
@@ -613,7 +594,6 @@ export component AppWindow inherits Window {
                                     text: row.ul_limit;
                                     cell-width: 132px;
                                     highlighted: row.is_global && index != root.selected-row;
-                                    clicked => { root.clear-active-inputs(); root.row-clicked(index); }
                                     toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "limit_ul", value); }
                                 }
                                 CheckCell {
