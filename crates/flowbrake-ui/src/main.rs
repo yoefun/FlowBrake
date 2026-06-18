@@ -11,12 +11,14 @@ use flowbrake_core::{
     ProcessRule, RollingAverage, RowKind, SortColumn, SortDirection, SpeedUnit,
 };
 use flowbrake_windows::{
-    get_network_processes, is_elevated, relaunch_as_admin, show_admin_required_message,
-    EngineCommand, NetworkEngine, RelaunchResult,
+    computer_name, get_network_processes, is_elevated, process_icon, relaunch_as_admin,
+    show_admin_required_message, EngineCommand, NetworkEngine, ProcessMetadataCache, RelaunchResult,
 };
 use slint::{
-    CloseRequestResponse, ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel,
+    CloseRequestResponse, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer,
+    SharedString, Timer, TimerMode, VecModel,
 };
+use std::rc::Rc as StdRc;
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
     Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
@@ -50,6 +52,27 @@ struct AppState {
     speed_unit: SpeedUnit,
     ipv6_enabled: bool,
     last_row_click: Option<(i32, Instant)>,
+    icon_cache: HashMap<String, Image>,
+    process_cache: ProcessMetadataCache,
+    table_fingerprint: TableFingerprint,
+    ui_rows: Option<StdRc<VecModel<ProcessRow>>>,
+    computer_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TableFingerprint {
+    pids: Vec<u32>,
+    expanded: Vec<String>,
+}
+
+impl TableFingerprint {
+    fn from_processes(processes: &[flowbrake_core::ProcessInfo], expanded: &HashSet<String>) -> Self {
+        let mut pids: Vec<u32> = processes.iter().map(|process| process.pid).collect();
+        pids.sort_unstable();
+        let mut expanded: Vec<String> = expanded.iter().cloned().collect();
+        expanded.sort_unstable();
+        Self { pids, expanded }
+    }
 }
 
 impl AppState {
@@ -77,6 +100,14 @@ impl AppState {
             speed_unit: SpeedUnit::from_bits_mode(settings.speed_unit_bits),
             ipv6_enabled: settings.ipv6_enabled,
             last_row_click: None,
+            icon_cache: HashMap::new(),
+            process_cache: ProcessMetadataCache::default(),
+            table_fingerprint: TableFingerprint {
+                pids: Vec::new(),
+                expanded: Vec::new(),
+            },
+            ui_rows: None,
+            computer_name: computer_name(),
         }
     }
 
@@ -109,8 +140,15 @@ impl AppState {
         Ok(())
     }
 
-    fn sync_name_rules_to_pids(&mut self) {
-        let processes = get_network_processes(self.rules.keys().copied(), self.ipv6_enabled);
+    fn fetch_processes(&mut self) -> Vec<flowbrake_core::ProcessInfo> {
+        get_network_processes(
+            self.rules.keys().copied(),
+            self.ipv6_enabled,
+            &mut self.process_cache,
+        )
+    }
+
+    fn apply_name_rules_from(&mut self, processes: &[flowbrake_core::ProcessInfo]) {
         let mut added = Vec::new();
         for process in processes {
             let key = process.name.to_lowercase();
@@ -130,11 +168,9 @@ impl AppState {
         }
     }
 
-    fn rebuild_rows(&mut self) {
-        self.sync_name_rules_to_pids();
-        let processes = get_network_processes(self.rules.keys().copied(), self.ipv6_enabled);
+    fn rebuild_rows_from(&mut self, processes: &[flowbrake_core::ProcessInfo]) {
         self.rows = build_process_rows(
-            &processes,
+            processes,
             &self.expanded,
             &self.rules,
             &self.speeds,
@@ -142,10 +178,36 @@ impl AppState {
             SortColumn::Process,
             SortDirection::Ascending,
         );
+        self.refresh_row_speeds();
+    }
+
+    fn refresh_row_speeds(&mut self) {
         if let Some(global) = self.rows.first_mut() {
             global.dl_bps = self.global_dl_bps;
             global.ul_bps = self.global_ul_bps;
         }
+
+        for row in self.rows.iter_mut().skip(1) {
+            match &mut row.kind {
+                RowKind::Group { pids, .. } => {
+                    row.dl_bps = sum_group_speed(pids, &self.speeds, Direction::Download);
+                    row.ul_bps = sum_group_speed(pids, &self.speeds, Direction::Upload);
+                }
+                RowKind::Child { pid, .. } => {
+                    let (dl_bps, ul_bps) = self.speeds.get(pid).copied().unwrap_or_default();
+                    row.dl_bps = dl_bps;
+                    row.ul_bps = ul_bps;
+                }
+                RowKind::Global => {}
+            }
+        }
+    }
+
+    fn rebuild_rows(&mut self) {
+        let processes = self.fetch_processes();
+        self.apply_name_rules_from(&processes);
+        self.rebuild_rows_from(&processes);
+        self.table_fingerprint = TableFingerprint::from_processes(&processes, &self.expanded);
     }
 
     fn start(&mut self) -> Result<(), String> {
@@ -206,6 +268,7 @@ impl AppState {
             process_name,
             pids,
             expanded,
+            ..
         } = &row.kind
         else {
             return;
@@ -872,7 +935,7 @@ fn main() -> Result<(), slint::PlatformError> {
             app.set_running(status.running);
             app.set_status_text(status.text.into());
             if state.borrow().can_refresh_table() {
-                render_rows(&app, &state);
+                refresh_table_on_tick(&app, &state);
             }
         });
     }
@@ -955,18 +1018,81 @@ fn handle_close_request(app: &AppWindow, state: &Rc<RefCell<AppState>>) -> Close
     }
 }
 
+fn sum_group_speed(
+    pids: &[u32],
+    speeds: &HashMap<u32, (f64, f64)>,
+    direction: Direction,
+) -> f64 {
+    pids.iter()
+        .map(|pid| {
+            let (dl_bps, ul_bps) = speeds.get(pid).copied().unwrap_or_default();
+            match direction {
+                Direction::Download => dl_bps,
+                Direction::Upload => ul_bps,
+            }
+        })
+        .sum()
+}
+
+fn refresh_table_on_tick(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
+    let mut state_ref = state.borrow_mut();
+    let processes = state_ref.fetch_processes();
+    state_ref.apply_name_rules_from(&processes);
+    let fingerprint = TableFingerprint::from_processes(&processes, &state_ref.expanded);
+
+    if fingerprint != state_ref.table_fingerprint {
+        state_ref.table_fingerprint = fingerprint;
+        state_ref.rebuild_rows_from(&processes);
+        publish_full_table(app, &mut state_ref);
+    } else {
+        state_ref.refresh_row_speeds();
+        publish_speed_updates(app, &state_ref);
+    }
+
+    update_summary_panel(app, &state_ref);
+    drop(state_ref);
+    update_selected_sidebar(app, state);
+}
+
+fn publish_full_table(app: &AppWindow, state: &mut AppState) {
+    let speed_unit = state.speed_unit;
+    let rows: Vec<ProcessRow> = state
+        .rows
+        .iter()
+        .map(|row| to_ui_row(row, speed_unit, &mut state.icon_cache, &state.computer_name))
+        .collect();
+    let model = StdRc::new(VecModel::from(rows));
+    app.set_rows(ModelRc::from(model.clone()));
+    state.ui_rows = Some(model);
+    app.set_selected_row(state.selected_row_index());
+}
+
+fn publish_speed_updates(app: &AppWindow, state: &AppState) {
+    let Some(model) = &state.ui_rows else {
+        return;
+    };
+
+    if model.row_count() != state.rows.len() {
+        return;
+    }
+
+    let unit = state.speed_unit;
+    for (index, core_row) in state.rows.iter().enumerate() {
+        let Some(mut ui_row) = model.row_data(index) else {
+            continue;
+        };
+        ui_row.dl_speed = SharedString::from(format_speed(core_row.dl_bps, unit));
+        ui_row.ul_speed = SharedString::from(format_speed(core_row.ul_bps, unit));
+        model.set_row_data(index, ui_row);
+    }
+    app.set_selected_row(state.selected_row_index());
+}
+
 fn render_rows(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     let mut state_ref = state.borrow_mut();
     state_ref.rebuild_rows();
-    let rows: Vec<ProcessRow> = state_ref
-        .rows
-        .iter()
-        .map(|row| to_ui_row(row, state_ref.speed_unit))
-        .collect();
-    let selected_row_index = state_ref.selected_row_index();
+    publish_full_table(app, &mut state_ref);
     update_summary_panel(app, &state_ref);
-    app.set_rows(ModelRc::new(VecModel::from(rows)));
-    app.set_selected_row(selected_row_index);
     drop(state_ref);
     update_selected_sidebar(app, state);
 }
@@ -1020,15 +1146,17 @@ fn update_selected_sidebar(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
 
     let (title, kind, pid, pids) = match &row.kind {
         RowKind::Global => (
-            "GLOBAL (all traffic)".to_string(),
-            "Global rule".to_string(),
+            state.computer_name.clone(),
+            "Computer".to_string(),
             "-".to_string(),
             "All traffic".to_string(),
         ),
         RowKind::Group {
-            process_name, pids, ..
+            display_name,
+            pids,
+            ..
         } => (
-            process_name.clone(),
+            display_name.clone(),
             if pids.len() > 1 {
                 "Process group".to_string()
             } else {
@@ -1041,8 +1169,10 @@ fn update_selected_sidebar(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
             },
             join_pids(pids),
         ),
-        RowKind::Child { process_name, pid } => (
-            process_name.clone(),
+        RowKind::Child {
+            display_name, pid, ..
+        } => (
+            display_name.clone(),
             "Process instance".to_string(),
             pid.to_string(),
             pid.to_string(),
@@ -1074,29 +1204,62 @@ fn join_pids(pids: &[u32]) -> String {
         .join(", ")
 }
 
-fn to_ui_row(row: &CoreProcessRow, unit: SpeedUnit) -> ProcessRow {
-    let (process, pid, is_global, is_group, depth) = match &row.kind {
+fn icon_for_exe_path(icon_cache: &mut HashMap<String, Image>, exe_path: &str) -> Image {
+    if exe_path.is_empty() {
+        return Image::default();
+    }
+
+    let key = exe_path.to_ascii_lowercase();
+    if let Some(icon) = icon_cache.get(&key) {
+        return icon.clone();
+    }
+
+    let image = load_process_icon(exe_path);
+    icon_cache.insert(key, image.clone());
+    image
+}
+
+fn to_ui_row(
+    row: &CoreProcessRow,
+    unit: SpeedUnit,
+    icon_cache: &mut HashMap<String, Image>,
+    computer_name: &str,
+) -> ProcessRow {
+    let (
+        process,
+        pid,
+        is_global,
+        is_group,
+        depth,
+        expandable,
+        expanded,
+        show_icon,
+        use_computer_icon,
+        exe_path,
+    ) = match &row.kind {
         RowKind::Global => (
-            SharedString::from("GLOBAL (all traffic)"),
+            SharedString::from(computer_name),
             SharedString::from(""),
             true,
             false,
             0,
+            false,
+            false,
+            false,
+            true,
+            "",
         ),
         RowKind::Group {
-            process_name,
+            display_name,
+            exe_path,
             pids,
             expanded,
+            ..
         } => {
             let label = if pids.len() > 1 {
-                format!(
-                    "{} {} ({})",
-                    if *expanded { "v" } else { ">" },
-                    process_name,
-                    pids.len()
-                )
+                format!("{display_name} ({})", pids.len())
             } else {
-                process_name.clone()
+                display_name.clone()
             };
             (
                 SharedString::from(label),
@@ -1108,20 +1271,35 @@ fn to_ui_row(row: &CoreProcessRow, unit: SpeedUnit) -> ProcessRow {
                 false,
                 true,
                 0,
+                pids.len() > 1,
+                *expanded,
+                true,
+                false,
+                exe_path.as_str(),
             )
         }
-        RowKind::Child { pid, .. } => (
+        RowKind::Child { pid, exe_path, .. } => (
             SharedString::from(format!("PID {pid}")),
             SharedString::from(pid.to_string()),
             false,
             false,
             1,
+            false,
+            false,
+            true,
+            false,
+            exe_path.as_str(),
         ),
     };
 
     ProcessRow {
         process,
         pid,
+        icon: icon_for_exe_path(icon_cache, exe_path),
+        show_icon,
+        use_computer_icon,
+        expandable,
+        expanded,
         dl_speed: SharedString::from(format_speed(row.dl_bps, unit)),
         ul_speed: SharedString::from(format_speed(row.ul_bps, unit)),
         limit_dl: row.rule.limit_download,
@@ -1134,6 +1312,25 @@ fn to_ui_row(row: &CoreProcessRow, unit: SpeedUnit) -> ProcessRow {
         is_group,
         depth,
     }
+}
+
+#[cfg(target_os = "windows")]
+fn load_process_icon(exe_path: &str) -> Image {
+    let path = std::path::Path::new(exe_path);
+    let Some(icon) = process_icon(path) else {
+        return Image::default();
+    };
+    let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+        &icon.rgba,
+        icon.width,
+        icon.height,
+    );
+    Image::from_rgba8(buffer)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn load_process_icon(_exe_path: &str) -> Image {
+    Image::default()
 }
 
 fn limit_text(kibps: u32, unit: SpeedUnit) -> SharedString {

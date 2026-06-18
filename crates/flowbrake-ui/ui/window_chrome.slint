@@ -1,3 +1,5 @@
+import { CheckBox } from "std-widgets.slint";
+
 component ChromeIcon inherits Rectangle {
     in property <string> kind;
     in property <bool> restore;
@@ -113,6 +115,42 @@ component SettingsMenuItem inherits Rectangle {
     }
 }
 
+component SettingsCheckItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    callback toggled(bool);
+    height: 32px;
+    background: hit.has-hover ? #edf2f7 : transparent;
+
+    hit := TouchArea {
+        clicked => {
+            root.toggled(!root.checked);
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        alignment: center;
+
+        CheckBox {
+            checked: root.checked;
+            toggled => {
+                root.toggled(self.checked);
+            }
+        }
+
+        Text {
+            text: root.text;
+            color: #24303f;
+            font-size: 12px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
 export component SettingsDropdown inherits Rectangle {
     in property <bool> speed-unit-bits;
     in property <bool> ipv6-enabled;
@@ -177,35 +215,11 @@ export component SettingsDropdown inherits Rectangle {
             }
         }
 
-        HorizontalLayout {
-            height: 18px;
-            padding-left: 12px;
-            padding-right: 12px;
-
-            Text {
-                text: "IPv6 support";
-                color: #65758b;
-                font-size: 11px;
-                font-weight: 700;
-                vertical-alignment: center;
-            }
-        }
-
-        SettingsMenuItem {
-            text: "Enabled";
-            selected: root.ipv6-enabled;
-            activate => {
-                root.ipv6-enabled-changed(true);
-                root.close-requested();
-            }
-        }
-
-        SettingsMenuItem {
-            text: "Disabled";
-            selected: !root.ipv6-enabled;
-            activate => {
-                root.ipv6-enabled-changed(false);
-                root.close-requested();
+        SettingsCheckItem {
+            text: "IPv6 support";
+            checked: root.ipv6-enabled;
+            toggled(enabled) => {
+                root.ipv6-enabled-changed(enabled);
             }
         }
     }

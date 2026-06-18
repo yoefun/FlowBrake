@@ -4,6 +4,11 @@ import { TitleBar, SettingsDropdown } from "window_chrome.slint";
 export struct ProcessRow {
     process: string,
     pid: string,
+    icon: image,
+    show-icon: bool,
+    use-computer-icon: bool,
+    expandable: bool,
+    expanded: bool,
     dl_speed: string,
     ul_speed: string,
     limit_dl: bool,
@@ -15,6 +20,154 @@ export struct ProcessRow {
     is_global: bool,
     is_group: bool,
     depth: int,
+}
+
+component ExpandChevron inherits Rectangle {
+    in property <bool> expanded;
+    in property <color> stroke-color: #28313d;
+    background: transparent;
+
+    Path {
+        width: 8px;
+        height: 8px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        stroke: root.stroke-color;
+        stroke-width: 1.2px;
+        commands: root.expanded ? "M 1 3 L 4 6 L 7 3" : "M 3 1 L 6 4 L 3 7";
+    }
+}
+
+component ComputerIcon inherits Rectangle {
+    in property <color> stroke-color: #24303f;
+    width: 16px;
+    height: 16px;
+    background: transparent;
+
+    Path {
+        width: 14px;
+        height: 11px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        stroke: root.stroke-color;
+        stroke-width: 1.1px;
+        commands: "M 1 1 L 13 1 L 13 7 L 9 7 L 8 10 L 6 10 L 5 7 L 1 7 Z";
+    }
+}
+
+component ExpandSlot inherits Rectangle {
+    in property <bool> expandable;
+    in property <bool> expanded;
+    in property <color> stroke-color: #28313d;
+    width: 12px;
+    height: 16px;
+
+    if root.expandable : ExpandChevron {
+        width: 12px;
+        height: 12px;
+        y: (parent.height - self.height) / 2;
+        expanded: root.expanded;
+        stroke-color: root.stroke-color;
+    }
+}
+
+component IconSlot inherits Rectangle {
+    in property <image> icon;
+    in property <bool> show-icon;
+    in property <bool> use-computer-icon;
+    in property <color> stroke-color: #28313d;
+    width: 16px;
+    height: 16px;
+
+    if root.use-computer-icon : ComputerIcon {
+        width: 16px;
+        height: 16px;
+        stroke-color: root.stroke-color;
+    }
+
+    if root.show-icon : Image {
+        source: root.icon;
+        width: 16px;
+        height: 16px;
+        image-fit: contain;
+    }
+}
+
+// Slint 1.16: HorizontalLayout.alignment is horizontal (main axis).
+// Nest VerticalLayout spacers for vertical center + HorizontalLayout start for left align.
+component ProcessCell inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> show-icon;
+    in property <bool> use-computer-icon;
+    in property <int> depth;
+    in property <bool> expandable;
+    in property <bool> expanded;
+    in property <length> row-height: 32px;
+    in property <color> foreground: #24303f;
+    in property <bool> strong: false;
+    callback clicked();
+    width: 280px;
+    height: root.row-height;
+
+    VerticalLayout {
+        width: parent.width;
+        height: parent.height;
+
+        Rectangle {
+            vertical-stretch: 1;
+        }
+
+        HorizontalLayout {
+            width: parent.width;
+            padding-right: 4px;
+            spacing: 6px;
+
+            ExpandSlot {
+                expandable: root.expandable;
+                expanded: root.expanded;
+                stroke-color: root.foreground;
+            }
+
+            IconSlot {
+                icon: root.icon;
+                show-icon: root.show-icon;
+                use-computer-icon: root.use-computer-icon;
+                stroke-color: root.foreground;
+            }
+
+            HorizontalLayout {
+                horizontal-stretch: 1;
+                spacing: 0px;
+
+                Rectangle {
+                    width: root.depth * 16px;
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    height: 16px;
+                    text: root.text;
+                    color: root.foreground;
+                    font-size: 12px;
+                    font-weight: root.strong ? 600 : 400;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                    overflow: elide;
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
 }
 
 component Cell inherits Rectangle {
@@ -426,10 +579,17 @@ export component AppWindow inherits Window {
                                 padding-left: 12px;
                                 padding-right: 12px;
                                 spacing: 8px;
+                                alignment: center;
 
-                                Cell {
-                                    text: row.depth == 0 ? row.process : ("      " + row.process);
-                                    cell-width: 280px;
+                                ProcessCell {
+                                    text: row.process;
+                                    icon: row.icon;
+                                    show-icon: row.show-icon;
+                                    use-computer-icon: row.use-computer-icon;
+                                    depth: row.depth;
+                                    expandable: row.expandable;
+                                    expanded: row.expanded;
+                                    row-height: row.is_global ? 36px : 32px;
                                     foreground: row.is_global && index != root.selected-row ? white : #24303f;
                                     strong: row.is_global || row.is_group;
                                     clicked => {

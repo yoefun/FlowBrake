@@ -283,6 +283,20 @@ pub fn format_limit_summary(kibps: u32, unit: SpeedUnit) -> String {
 pub struct ProcessInfo {
     pub pid: u32,
     pub name: String,
+    pub display_name: String,
+    pub exe_path: String,
+}
+
+impl ProcessInfo {
+    pub fn new(pid: u32, name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            pid,
+            display_name: name.clone(),
+            exe_path: String::new(),
+            name,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -290,11 +304,15 @@ pub enum RowKind {
     Global,
     Group {
         process_name: String,
+        display_name: String,
+        exe_path: String,
         pids: Vec<u32>,
         expanded: bool,
     },
     Child {
         process_name: String,
+        display_name: String,
+        exe_path: String,
         pid: u32,
     },
 }
@@ -360,10 +378,13 @@ pub fn build_process_rows(
     let mut rows = vec![ProcessRow::global(global_rule)];
     for (name, pids) in groups {
         let expanded = expanded_names.contains(&name.to_lowercase());
+        let (display_name, exe_path) = process_presentation(processes, &name);
         let rule = first_existing_rule(&pids, rules);
         rows.push(ProcessRow {
             kind: RowKind::Group {
                 process_name: name.clone(),
+                display_name: display_name.clone(),
+                exe_path: exe_path.clone(),
                 pids: pids.clone(),
                 expanded,
             },
@@ -379,6 +400,8 @@ pub fn build_process_rows(
                 rows.push(ProcessRow {
                     kind: RowKind::Child {
                         process_name: name.clone(),
+                        display_name: display_name.clone(),
+                        exe_path: exe_path.clone(),
                         pid,
                     },
                     dl_bps,
@@ -390,6 +413,14 @@ pub fn build_process_rows(
     }
 
     rows
+}
+
+fn process_presentation(processes: &[ProcessInfo], name: &str) -> (String, String) {
+    processes
+        .iter()
+        .find(|process| process.name.eq_ignore_ascii_case(name))
+        .map(|process| (process.display_name.clone(), process.exe_path.clone()))
+        .unwrap_or_else(|| (name.to_string(), String::new()))
 }
 
 fn compare_groups(
@@ -541,18 +572,9 @@ mod tests {
     #[test]
     fn process_rows_group_case_insensitively() {
         let processes = vec![
-            ProcessInfo {
-                pid: 2,
-                name: "chrome".into(),
-            },
-            ProcessInfo {
-                pid: 1,
-                name: "Chrome".into(),
-            },
-            ProcessInfo {
-                pid: 5,
-                name: "curl".into(),
-            },
+            ProcessInfo::new(2, "chrome"),
+            ProcessInfo::new(1, "Chrome"),
+            ProcessInfo::new(5, "curl"),
         ];
         let expanded = HashSet::from(["chrome".to_string()]);
         let speeds = HashMap::from([(1, (10.0, 1.0)), (2, (20.0, 2.0)), (5, (5.0, 50.0))]);
@@ -573,6 +595,8 @@ mod tests {
             &rows[1].kind,
             RowKind::Group {
                 process_name,
+                display_name: _,
+                exe_path: _,
                 pids,
                 expanded: true
             } if process_name == "chrome" && pids == &vec![1, 2]
@@ -584,14 +608,8 @@ mod tests {
     #[test]
     fn expanded_state_matches_lowercase_keys() {
         let processes = vec![
-            ProcessInfo {
-                pid: 1,
-                name: "Chrome.exe".into(),
-            },
-            ProcessInfo {
-                pid: 2,
-                name: "chrome.exe".into(),
-            },
+            ProcessInfo::new(1, "Chrome.exe"),
+            ProcessInfo::new(2, "chrome.exe"),
         ];
         let expanded = HashSet::from(["chrome.exe".to_string()]);
         let speeds = HashMap::from([(1, (10.0, 1.0)), (2, (20.0, 2.0))]);

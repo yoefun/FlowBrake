@@ -6,7 +6,7 @@ use std::ptr::null_mut;
 use flowbrake_core::ProcessInfo;
 
 use crate::packet::Protocol;
-use crate::process::process_name;
+use crate::process::process_details;
 
 const AF_INET: u32 = 2;
 const AF_INET6: u32 = 23;
@@ -84,6 +84,7 @@ impl PortPidMap {
 pub fn get_network_processes(
     active_rule_pids: impl IntoIterator<Item = u32>,
     ipv6_enabled: bool,
+    cache: &mut crate::process::ProcessMetadataCache,
 ) -> Vec<ProcessInfo> {
     let map = PortPidMap::refresh(ipv6_enabled);
     let mut pids: HashSet<u32> = map.pids().filter(|pid| *pid > 0).collect();
@@ -91,7 +92,14 @@ pub fn get_network_processes(
 
     let mut processes: Vec<ProcessInfo> = pids
         .into_iter()
-        .filter_map(|pid| process_name(pid).map(|name| ProcessInfo { pid, name }))
+        .filter_map(|pid| {
+            process_details(pid, cache).map(|details| ProcessInfo {
+                pid: details.pid,
+                name: details.name,
+                display_name: details.display_name,
+                exe_path: details.exe_path.to_string_lossy().into_owned(),
+            })
+        })
         .collect();
 
     processes.sort_by_key(|process| process.name.to_lowercase());
