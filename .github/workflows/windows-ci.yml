@@ -9,12 +9,9 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  build:
-    name: Build and package Windows x64
+  check:
+    name: Check
     runs-on: windows-latest
 
     steps:
@@ -42,6 +39,27 @@ jobs:
         shell: pwsh
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  release:
+    name: Build and package Windows x64
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
       - name: Build release executable
         shell: pwsh
         run: cargo build -p flowbrake-ui --release
@@ -51,7 +69,7 @@ jobs:
         shell: pwsh
         run: .\scripts\package-windows.ps1
 
-      - name: Upload CI artifact
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: FlowBrake-windows-x64
@@ -61,7 +79,6 @@ jobs:
           if-no-files-found: error
 
       - name: Attach release assets
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
