@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -299,6 +300,182 @@ impl ProcessInfo {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SocketEndpoint {
+    pub addr: IpAddr,
+    pub port: u16,
+}
+
+impl SocketEndpoint {
+    pub fn display_remote(&self) -> String {
+        match self.addr {
+            IpAddr::V4(addr) => format!("{addr}:{}", self.port),
+            IpAddr::V6(addr) => format!("[{addr}]:{}", self.port),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TcpConnectionKey {
+    pub local: SocketEndpoint,
+    pub remote: SocketEndpoint,
+    pub ipv6: bool,
+}
+
+impl TcpConnectionKey {
+    pub fn encode_id(&self) -> String {
+        let version = if self.ipv6 { "6" } else { "4" };
+        format!(
+            "{version}|{}|{}|{}|{}",
+            self.local.addr,
+            self.local.port,
+            self.remote.addr,
+            self.remote.port
+        )
+    }
+
+    pub fn decode_id(value: &str) -> Option<Self> {
+        let mut parts = value.split('|');
+        let version = parts.next()?;
+        let local_addr: IpAddr = parts.next()?.parse().ok()?;
+        let local_port: u16 = parts.next()?.parse().ok()?;
+        let remote_addr: IpAddr = parts.next()?.parse().ok()?;
+        let remote_port: u16 = parts.next()?.parse().ok()?;
+        let ipv6 = match version {
+            "4" => false,
+            "6" => true,
+            _ => return None,
+        };
+        Some(Self {
+            local: SocketEndpoint {
+                addr: local_addr,
+                port: local_port,
+            },
+            remote: SocketEndpoint {
+                addr: remote_addr,
+                port: remote_port,
+            },
+            ipv6,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TcpConnectionState {
+    Closed,
+    Listen,
+    SynSent,
+    SynReceived,
+    Established,
+    FinWait1,
+    FinWait2,
+    CloseWait,
+    Closing,
+    LastAck,
+    TimeWait,
+    DeleteTcb,
+    Unknown(u8),
+}
+
+impl TcpConnectionState {
+    pub fn from_mib_state(state: u32) -> Self {
+        match state {
+            1 => Self::Closed,
+            2 => Self::Listen,
+            3 => Self::SynSent,
+            4 => Self::SynReceived,
+            5 => Self::Established,
+            6 => Self::FinWait1,
+            7 => Self::FinWait2,
+            8 => Self::CloseWait,
+            9 => Self::Closing,
+            10 => Self::LastAck,
+            11 => Self::TimeWait,
+            12 => Self::DeleteTcb,
+            value => Self::Unknown(value as u8),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Closed => "CLOSED",
+            Self::Listen => "LISTEN",
+            Self::SynSent => "SYN_SENT",
+            Self::SynReceived => "SYN_RCVD",
+            Self::Established => "ESTABLISHED",
+            Self::FinWait1 => "FIN_WAIT1",
+            Self::FinWait2 => "FIN_WAIT2",
+            Self::CloseWait => "CLOSE_WAIT",
+            Self::Closing => "CLOSING",
+            Self::LastAck => "LAST_ACK",
+            Self::TimeWait => "TIME_WAIT",
+            Self::DeleteTcb => "DELETE_TCB",
+            Self::Unknown(_) => "UNKNOWN",
+        }
+    }
+
+    pub fn is_list_visible(self) -> bool {
+        !matches!(
+            self,
+            Self::Closed | Self::Listen | Self::TimeWait | Self::DeleteTcb
+        )
+    }
+
+    pub fn is_disconnectable(self) -> bool {
+        matches!(
+            self,
+            Self::Established
+                | Self::CloseWait
+                | Self::FinWait1
+                | Self::FinWait2
+                | Self::LastAck
+                | Self::SynReceived
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TcpConnection {
+    pub key: TcpConnectionKey,
+    pub pid: u32,
+    pub state: TcpConnectionState,
+}
+
+impl TcpConnection {
+    pub fn display_remote(&self) -> String {
+        self.key.remote.display_remote()
+    }
+}
+
+pub fn ipv4_from_mib_addr(value: u32) -> Ipv4Addr {
+    Ipv4Addr::new(
+        (value & 0xff) as u8,
+        ((value >> 8) & 0xff) as u8,
+        ((value >> 16) & 0xff) as u8,
+        ((value >> 24) & 0xff) as u8,
+    )
+}
+
+pub fn ipv6_from_mib_addr(bytes: [u8; 16]) -> Ipv6Addr {
+    let mut segments = [0u16; 8];
+    for (index, segment) in segments.iter_mut().enumerate() {
+        *segment = u16::from_be_bytes([bytes[index * 2], bytes[index * 2 + 1]]);
+    }
+    Ipv6Addr::from(segments)
+}
+
+pub fn mib_ipv4_addr(addr: Ipv4Addr) -> u32 {
+    let octets = addr.octets();
+    u32::from(octets[0])
+        | (u32::from(octets[1]) << 8)
+        | (u32::from(octets[2]) << 16)
+        | (u32::from(octets[3]) << 24)
+}
+
+pub fn mib_port(port: u16) -> u32 {
+    u32::from(port.to_be())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowKind {
     Global,
@@ -468,6 +645,29 @@ fn sum_speed(pids: &[u32], speeds: &HashMap<u32, (f64, f64)>, direction: Directi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tcp_connection_key_round_trips_through_id_encoding() {
+        let key = TcpConnectionKey {
+            local: SocketEndpoint {
+                addr: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)),
+                port: 54321,
+            },
+            remote: SocketEndpoint {
+                addr: IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+                port: 443,
+            },
+            ipv6: false,
+        };
+        let encoded = key.encode_id();
+        assert_eq!(TcpConnectionKey::decode_id(&encoded), Some(key));
+    }
+
+    #[test]
+    fn mib_ipv4_addr_round_trips() {
+        let addr = Ipv4Addr::new(192, 168, 1, 5);
+        assert_eq!(ipv4_from_mib_addr(mib_ipv4_addr(addr)), addr);
+    }
 
     #[test]
     fn rule_reports_only_meaningful_limits() {

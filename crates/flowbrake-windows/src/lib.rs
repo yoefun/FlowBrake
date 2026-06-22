@@ -4,6 +4,7 @@ pub mod ip_helper;
 pub mod packet;
 pub mod process;
 pub mod system;
+pub mod tcp;
 pub mod windivert;
 
 pub use elevation::{
@@ -12,10 +13,14 @@ pub use elevation::{
 };
 pub use engine::{EngineCommand, EngineError, EngineSnapshot, NetworkEngine};
 pub use flowbrake_core::Direction;
-pub use ip_helper::{get_network_processes, PortPidMap};
+pub use ip_helper::{get_network_processes, list_tcp_connections, PortPidMap};
 pub use packet::{IpPacket, Ipv4Packet};
 pub use system::computer_name;
+pub use tcp::{
+    close_tcp_connection, close_tcp_connections_for_pid, close_tcp_connections_for_pids,
+    CloseTcpError,
+};
 pub use process::{
-    process_details, process_details_uncached, process_icon, ProcessDetails, ProcessIcon,
-    ProcessMetadataCache,
+    list_running_pids, process_details, process_details_uncached, process_icon, ProcessDetails,
+    ProcessIcon, ProcessMetadataCache,
 };

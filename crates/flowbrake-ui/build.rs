@@ -1,6 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=ui/main.slint");
     println!("cargo:rerun-if-changed=ui/window_chrome.slint");
+    println!("cargo:rerun-if-changed=ui/widgets.slint");
     println!("cargo:rerun-if-changed=../../assets/app.ico");
     println!("cargo:rerun-if-changed=../../third_party/windivert/WinDivert.dll");
     println!("cargo:rerun-if-changed=../../third_party/windivert/WinDivert64.sys");

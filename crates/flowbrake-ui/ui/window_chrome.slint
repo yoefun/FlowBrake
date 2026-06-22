@@ -1,4 +1,4 @@
-import { CheckBox } from "std-widgets.slint";
+import { CheckBoxSlot } from "widgets.slint";
 
 component ChromeIcon inherits Rectangle {
     in property <string> kind;
@@ -128,31 +128,37 @@ component SettingsCheckItem inherits Rectangle {
         }
     }
 
-    HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 10px;
+    VerticalLayout {
+        height: parent.height;
 
         Rectangle {
-            width: 16px;
-            height: 16px;
+            vertical-stretch: 1;
+        }
 
-            CheckBox {
-                width: 16px;
-                height: 16px;
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            spacing: 10px;
+
+            CheckBoxSlot {
                 checked: root.checked;
-                toggled => {
-                    root.toggled(self.checked);
+                toggled(value) => {
+                    root.toggled(value);
                 }
+            }
+
+            Text {
+                text: root.text;
+                height: 18px;
+                color: #24303f;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
             }
         }
 
-        Text {
-            text: root.text;
-            color: #24303f;
-            font-size: 12px;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
+        Rectangle {
+            vertical-stretch: 1;
         }
     }
 }
@@ -194,7 +200,7 @@ export component SettingsDropdown inherits Rectangle {
         }
 
         SettingsMenuItem {
-            text: "ISP units (Mb/s)";
+            text: "ISP units (Kb/s)";
             selected: root.speed-unit-bits;
             activate => {
                 root.speed-unit-bits-changed(true);

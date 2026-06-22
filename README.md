@@ -16,6 +16,7 @@ implementation and generated .NET publish artifacts have been removed.
 - Global download and upload limits for all traffic
 - Process grouping by executable name, with optional per-PID expansion
 - Block-all switches for global or per-process traffic
+- TCP connection list in the sidebar with per-connection and bulk disconnect (IPv4)
 - Adaptive mode that adjusts token-bucket rates toward the configured target
 - Live rolling speed display
 - System tray support while the interceptor is running
@@ -172,6 +173,7 @@ exception.
 - Windows-only
 - IPv4 only
 - Drop-based throttling can affect connection stability at very low limits
+- TCP disconnect uses `SetTcpEntry` and currently supports IPv4 connections only
 - No persistent configuration file yet
 - No installer or signed driver distribution workflow yet
 

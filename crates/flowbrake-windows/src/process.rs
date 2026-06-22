@@ -11,6 +11,7 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
 };
+use windows_sys::Win32::System::ProcessStatus::EnumProcesses;
 use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
@@ -79,6 +80,31 @@ pub fn process_name(pid: u32) -> Option<String> {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .map(str::to_string)
+}
+
+pub fn list_running_pids() -> Vec<u32> {
+    let mut buffer = vec![0u32; 4096];
+    loop {
+        let mut bytes_returned = 0u32;
+        let ok = unsafe {
+            EnumProcesses(
+                buffer.as_mut_ptr(),
+                (buffer.len() * std::mem::size_of::<u32>()) as u32,
+                &mut bytes_returned,
+            )
+        };
+        if ok == 0 {
+            return Vec::new();
+        }
+
+        let count = bytes_returned as usize / std::mem::size_of::<u32>();
+        if count < buffer.len() {
+            buffer.truncate(count);
+            return buffer.into_iter().filter(|pid| *pid > 0).collect();
+        }
+
+        buffer.resize(buffer.len() * 2, 0);
+    }
 }
 
 fn path_key(path: &Path) -> String {

@@ -1,0 +1,56 @@
+export component FlowCheckBox inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color:
+        !root.enabled ? #b8c4d2
+        : (root.checked
+            ? #3f7eb8
+            : (hit.has-hover ? #5f86a8 : #8fa3b8));
+    background:
+        !root.enabled ? #e8edf3
+        : (root.checked
+            ? #4a8fc8
+            : (hit.has-hover ? #d2e0ef : #ffffff));
+
+    hit := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            if (root.enabled) {
+                root.toggled(!root.checked);
+            }
+        }
+    }
+
+    if root.checked: Path {
+        x: 4px;
+        y: 5px;
+        width: 10px;
+        height: 8px;
+        stroke: #ffffff;
+        stroke-width: 1.6px;
+        commands: "M 0 4 L 3.5 7.5 L 10 0.5";
+    }
+}
+
+export component CheckBoxSlot inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    in property <length> slot-height: 18px;
+    callback toggled(bool);
+    width: 18px;
+    height: root.slot-height;
+
+    FlowCheckBox {
+        checked: root.checked;
+        enabled: root.enabled;
+        y: (parent.height - self.height) / 2;
+        toggled(value) => {
+            root.toggled(value);
+        }
+    }
+}

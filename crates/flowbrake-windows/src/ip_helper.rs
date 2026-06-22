@@ -1,12 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;
+use std::net::IpAddr;
 use std::ptr::null_mut;
 
-use flowbrake_core::ProcessInfo;
+use flowbrake_core::{
+    ipv4_from_mib_addr, ipv6_from_mib_addr, ProcessInfo, SocketEndpoint, TcpConnection,
+    TcpConnectionKey, TcpConnectionState,
+};
 
 use crate::packet::Protocol;
-use crate::process::process_details;
+use crate::process::{list_running_pids, process_details};
 
 const AF_INET: u32 = 2;
 const AF_INET6: u32 = 23;
@@ -83,12 +87,13 @@ impl PortPidMap {
 
 pub fn get_network_processes(
     active_rule_pids: impl IntoIterator<Item = u32>,
-    ipv6_enabled: bool,
+    _ipv6_enabled: bool,
     cache: &mut crate::process::ProcessMetadataCache,
 ) -> Vec<ProcessInfo> {
-    let map = PortPidMap::refresh(ipv6_enabled);
-    let mut pids: HashSet<u32> = map.pids().filter(|pid| *pid > 0).collect();
+    let self_pid = std::process::id();
+    let mut pids: HashSet<u32> = list_running_pids().into_iter().collect();
     pids.extend(active_rule_pids.into_iter().filter(|pid| *pid > 0));
+    pids.remove(&self_pid);
 
     let mut processes: Vec<ProcessInfo> = pids
         .into_iter()
@@ -106,11 +111,27 @@ pub fn get_network_processes(
     processes
 }
 
-fn build_tcp_port_pid_map(af: u32) -> HashMap<u16, u32> {
-    let Some((row_size, local_port_offset, owning_pid_offset)) = tcp_row_layout(af) else {
-        return HashMap::new();
-    };
+pub fn list_tcp_connections(ipv6_enabled: bool) -> Vec<TcpConnection> {
+    let mut connections = fetch_tcp_connections(AF_INET);
+    if ipv6_enabled {
+        connections.extend(fetch_tcp_connections(AF_INET6));
+    }
+    connections.sort_by(|left, right| {
+        left.pid
+            .cmp(&right.pid)
+            .then_with(|| left.display_remote().cmp(&right.display_remote()))
+    });
+    connections
+}
 
+fn fetch_tcp_connections(af: u32) -> Vec<TcpConnection> {
+    let Some(buffer) = read_tcp_table(af) else {
+        return Vec::new();
+    };
+    parse_tcp_connections(&buffer, af)
+}
+
+fn read_tcp_table(af: u32) -> Option<Vec<u8>> {
     let mut size = 0u32;
     let status = unsafe {
         GetExtendedTcpTable(
@@ -123,7 +144,7 @@ fn build_tcp_port_pid_map(af: u32) -> HashMap<u16, u32> {
         )
     };
     if status != ERROR_INSUFFICIENT_BUFFER || size == 0 {
-        return HashMap::new();
+        return None;
     }
 
     let mut buffer = vec![0u8; size as usize];
@@ -138,8 +159,18 @@ fn build_tcp_port_pid_map(af: u32) -> HashMap<u16, u32> {
         )
     };
     if status != 0 {
-        return HashMap::new();
+        return None;
     }
+    Some(buffer)
+}
+
+fn build_tcp_port_pid_map(af: u32) -> HashMap<u16, u32> {
+    let Some(buffer) = read_tcp_table(af) else {
+        return HashMap::new();
+    };
+    let Some((row_size, local_port_offset, owning_pid_offset)) = tcp_row_layout(af) else {
+        return HashMap::new();
+    };
     parse_owner_pid_rows(&buffer, row_size, local_port_offset, owning_pid_offset)
 }
 
@@ -180,6 +211,113 @@ fn tcp_row_layout(af: u32) -> Option<(usize, usize, usize)> {
     }
 }
 
+fn tcp_connection_row_layout(
+    af: u32,
+) -> Option<(usize, usize, usize, usize, usize, usize, usize)> {
+    match af {
+        AF_INET => Some((24, 0, 4, 8, 12, 16, 20)),
+        AF_INET6 => Some((56, 0, 4, 20, 24, 40, 52)),
+        _ => None,
+    }
+}
+
+fn parse_tcp_connections(buffer: &[u8], af: u32) -> Vec<TcpConnection> {
+    let (
+        row_size,
+        state_offset,
+        local_addr_offset,
+        local_port_offset,
+        remote_addr_offset,
+        remote_port_offset,
+        owning_pid_offset,
+    ) = match tcp_connection_row_layout(af) {
+        Some(layout) => layout,
+        None => return Vec::new(),
+    };
+
+    let mut connections = Vec::new();
+    if buffer.len() < size_of::<u32>() {
+        return connections;
+    }
+
+    let count = u32::from_ne_bytes(buffer[0..4].try_into().unwrap()) as usize;
+    let mut offset = 4usize;
+    for _ in 0..count {
+        let end = offset + row_size;
+        if end > buffer.len() {
+            break;
+        }
+
+        let row = &buffer[offset..end];
+        let state =
+            TcpConnectionState::from_mib_state(u32::from_ne_bytes(row[state_offset..state_offset + 4].try_into().unwrap()));
+        if !state.is_list_visible() {
+            offset = end;
+            continue;
+        }
+
+        let local_port = parse_mib_port(&row[local_port_offset..local_port_offset + 4]);
+        let remote_port = parse_mib_port(&row[remote_port_offset..remote_port_offset + 4]);
+        let pid = u32::from_ne_bytes(
+            row[owning_pid_offset..owning_pid_offset + 4]
+                .try_into()
+                .unwrap(),
+        );
+        if pid == 0 || local_port == 0 {
+            offset = end;
+            continue;
+        }
+
+        let (local_addr, remote_addr, ipv6) = if af == AF_INET6 {
+            let mut local_bytes = [0u8; 16];
+            let mut remote_bytes = [0u8; 16];
+            local_bytes.copy_from_slice(&row[local_addr_offset..local_addr_offset + 16]);
+            remote_bytes.copy_from_slice(&row[remote_addr_offset..remote_addr_offset + 16]);
+            (
+                IpAddr::V6(ipv6_from_mib_addr(local_bytes)),
+                IpAddr::V6(ipv6_from_mib_addr(remote_bytes)),
+                true,
+            )
+        } else {
+            let local_addr = ipv4_from_mib_addr(u32::from_ne_bytes(
+                row[local_addr_offset..local_addr_offset + 4]
+                    .try_into()
+                    .unwrap(),
+            ));
+            let remote_addr = ipv4_from_mib_addr(u32::from_ne_bytes(
+                row[remote_addr_offset..remote_addr_offset + 4]
+                    .try_into()
+                    .unwrap(),
+            ));
+            (IpAddr::V4(local_addr), IpAddr::V4(remote_addr), false)
+        };
+
+        connections.push(TcpConnection {
+            key: TcpConnectionKey {
+                local: SocketEndpoint {
+                    addr: local_addr,
+                    port: local_port,
+                },
+                remote: SocketEndpoint {
+                    addr: remote_addr,
+                    port: remote_port,
+                },
+                ipv6,
+            },
+            pid,
+            state,
+        });
+        offset = end;
+    }
+
+    connections
+}
+
+fn parse_mib_port(bytes: &[u8]) -> u16 {
+    let raw = u32::from_ne_bytes(bytes.try_into().unwrap());
+    u16::from_be((raw & 0xffff) as u16)
+}
+
 fn udp_row_layout(af: u32) -> Option<(usize, usize, usize)> {
     match af {
         AF_INET => Some((12, 4, 8)),
@@ -190,6 +328,10 @@ fn udp_row_layout(af: u32) -> Option<(usize, usize, usize)> {
 
 pub fn parse_tcp_owner_pid_table(buffer: &[u8]) -> HashMap<u16, u32> {
     parse_owner_pid_rows(buffer, 24, 8, 20)
+}
+
+pub fn parse_tcp_connection_table(buffer: &[u8]) -> Vec<TcpConnection> {
+    parse_tcp_connections(buffer, AF_INET)
 }
 
 pub fn parse_tcp6_owner_pid_table(buffer: &[u8]) -> HashMap<u16, u32> {
@@ -289,6 +431,27 @@ mod tests {
 
         let map = parse_udp6_owner_pid_table(&table);
         assert_eq!(map.get(&5353), Some(&789));
+    }
+
+    #[test]
+    fn parses_tcp_connection_remote_endpoint() {
+        use flowbrake_core::mib_ipv4_addr;
+        use std::net::Ipv4Addr;
+
+        let mut table = vec![0u8; 4 + 24];
+        table[0..4].copy_from_slice(&1u32.to_ne_bytes());
+        table[4..8].copy_from_slice(&5u32.to_ne_bytes());
+        table[4 + 4..4 + 8].copy_from_slice(&mib_ipv4_addr(Ipv4Addr::new(192, 168, 1, 5)).to_ne_bytes());
+        table[4 + 8..4 + 12].copy_from_slice(&(54321u16.to_be() as u32).to_ne_bytes());
+        table[4 + 12..4 + 16].copy_from_slice(&mib_ipv4_addr(Ipv4Addr::new(8, 8, 8, 8)).to_ne_bytes());
+        table[4 + 16..4 + 20].copy_from_slice(&(443u16.to_be() as u32).to_ne_bytes());
+        table[4 + 20..4 + 24].copy_from_slice(&123u32.to_ne_bytes());
+
+        let connections = parse_tcp_connection_table(&table);
+        assert_eq!(connections.len(), 1);
+        assert_eq!(connections[0].pid, 123);
+        assert_eq!(connections[0].display_remote(), "8.8.8.8:443");
+        assert_eq!(connections[0].key.local.port, 54321);
     }
 
     #[test]

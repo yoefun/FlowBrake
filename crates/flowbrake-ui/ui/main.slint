@@ -1,4 +1,5 @@
-import { CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { CheckBoxSlot } from "widgets.slint";
 import { TitleBar, SettingsDropdown } from "window_chrome.slint";
 
 export struct ProcessRow {
@@ -13,13 +14,22 @@ export struct ProcessRow {
     ul_speed: string,
     limit_dl: bool,
     dl_limit: string,
+    dl_limit_edit: string,
     limit_ul: bool,
     ul_limit: string,
+    ul_limit_edit: string,
     block: bool,
     adaptive: bool,
     is_global: bool,
     is_group: bool,
     depth: int,
+}
+
+export struct ConnectionRow {
+    key: string,
+    label: string,
+    detail: string,
+    disconnectable: bool,
 }
 
 component ExpandChevron inherits Rectangle {
@@ -212,13 +222,13 @@ component CheckCell inherits Rectangle {
     width: root.cell-width;
     height: 32px;
 
-    CheckBox {
+    CheckBoxSlot {
         checked: root.checked;
         enabled: root.enabled;
-        x: (parent.width - self.width) / 2;
+        x: 0px;
         y: (parent.height - self.height) / 2;
-        toggled => {
-            root.toggled(self.checked);
+        toggled(value) => {
+            root.toggled(value);
         }
     }
 }
@@ -226,46 +236,98 @@ component CheckCell inherits Rectangle {
 component LimitDisplayCell inherits Rectangle {
     in property <bool> checked;
     in property <string> text;
+    in property <string> edit-value;
     in property <length> cell-width: 132px;
     in property <bool> highlighted: false;
     callback toggled(bool);
+    callback limit-submitted(string);
+    callback focus-changed(bool);
     width: root.cell-width;
     height: 32px;
 
-    HorizontalLayout {
-        spacing: 8px;
-        padding-left: 0px;
-        padding-right: 0px;
-        padding-top: 3px;
-        padding-bottom: 3px;
+    cell-shield := TouchArea {
+        width: parent.width;
+        height: parent.height;
+    }
 
-        CheckBox {
-            checked: root.checked;
-            width: 22px;
-            toggled => {
-                root.toggled(self.checked);
+    VerticalLayout {
+        width: parent.width;
+        height: parent.height;
+
+        Rectangle {
+            vertical-stretch: 1;
+        }
+
+        HorizontalLayout {
+            width: parent.width;
+            spacing: 0px;
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                CheckBoxSlot {
+                    slot-height: 26px;
+                    checked: root.checked;
+                    toggled(value) => {
+                        root.toggled(value);
+                    }
+                }
+
+                Rectangle {
+                    width: root.cell-width - 30px;
+                    height: 26px;
+                    background: root.checked ? (root.highlighted ? #244562 : #e8f2ff) : transparent;
+                    border-color: root.checked ? #4a8fc8 : transparent;
+                    border-width: 1px;
+                    border-radius: 4px;
+
+                    if !root.checked: Text {
+                        text: root.text;
+                        font-size: 12px;
+                        color: root.highlighted ? #edf6ff : #65758b;
+                        x: 7px;
+                        width: parent.width - 14px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                        overflow: elide;
+                    }
+
+                    if root.checked: TextInput {
+                        text: root.edit-value;
+                        x: 7px;
+                        y: 1px;
+                        width: parent.width - 14px;
+                        height: parent.height - 2px;
+                        font-size: 12px;
+                        color: root.highlighted ? #edf6ff : #23435f;
+                        single-line: true;
+                        vertical-alignment: center;
+                        accepted => {
+                            root.limit-submitted(self.text);
+                            self.clear-focus();
+                        }
+                        changed has-focus => {
+                            if (!self.has-focus) {
+                                root.limit-submitted(self.text);
+                            }
+                            root.focus-changed(self.has-focus);
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
             }
         }
 
         Rectangle {
-            width: root.cell-width - 30px;
-            height: 26px;
-            background: root.checked ? (root.highlighted ? #244562 : #e8f2ff) : transparent;
-            border-color: root.checked ? #4a8fc8 : transparent;
-            border-width: 1px;
-            border-radius: 4px;
-
-            Text {
-                text: root.text;
-                font-size: 12px;
-                color: root.highlighted ? #edf6ff : (root.checked ? #23435f : #65758b);
-                x: 7px;
-                width: parent.width - 14px;
-                height: parent.height;
-                vertical-alignment: center;
-                horizontal-alignment: left;
-                overflow: elide;
-            }
+            vertical-stretch: 1;
         }
     }
 }
@@ -301,25 +363,37 @@ component SidebarCheck inherits Rectangle {
     callback toggled(bool);
     height: 28px;
 
-    HorizontalLayout {
-        spacing: 9px;
+    VerticalLayout {
+        height: parent.height;
 
-        CheckBox {
-            checked: root.checked;
-            width: 22px;
-            height: 24px;
-            toggled => {
-                root.toggled(self.checked);
+        Rectangle {
+            vertical-stretch: 1;
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+
+            CheckBoxSlot {
+                checked: root.checked;
+                toggled(value) => {
+                    root.toggled(value);
+                }
+            }
+
+            Text {
+                text: root.text;
+                height: 18px;
+                color: #24303f;
+                font-size: 13px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
             }
         }
 
-        Text {
-            text: root.text;
-            color: #24303f;
-            font-size: 13px;
-            font-weight: 600;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
+        Rectangle {
+            vertical-stretch: 1;
         }
     }
 }
@@ -334,6 +408,153 @@ component SidebarLabel inherits Rectangle {
         font-size: 11px;
         font-weight: 700;
         vertical-alignment: center;
+    }
+}
+
+component SidebarActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 26px;
+    min-width: 72px;
+    background: enabled && action-hover.has-hover ? #d9e8f7 : (enabled ? #edf4fb : #eef1f5);
+    border-radius: 4px;
+    border-color: enabled ? #b7cde2 : #d5dbe3;
+    border-width: 1px;
+
+    action-hover := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    Text {
+        text: root.text;
+        color: root.enabled ? #1f4f78 : #9aa6b5;
+        font-size: 11px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+}
+
+component ConnectionRowItem inherits Rectangle {
+    in property <ConnectionRow> connection;
+    callback disconnect-requested(string);
+    height: 42px;
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 2px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+
+        HorizontalLayout {
+            spacing: 6px;
+
+            Text {
+                text: root.connection.label;
+                color: #172638;
+                font-size: 12px;
+                font-weight: 600;
+                overflow: elide;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+
+            SidebarActionButton {
+                text: "Disconnect";
+                enabled: root.connection.disconnectable;
+                clicked => {
+                    root.disconnect-requested(root.connection.key);
+                }
+            }
+        }
+
+        Text {
+            text: root.connection.detail;
+            color: #65758b;
+            font-size: 10px;
+            overflow: elide;
+        }
+    }
+}
+
+component SidebarTabButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+    height: 30px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: root.active ? #c5d5e6 : transparent;
+    background:
+        root.active
+            ? #ffffff
+            : (tab-hit.pressed
+                ? #d5dde8
+                : (tab-hit.has-hover ? #dfe7f1 : transparent));
+
+    tab-hit := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    Text {
+        text: root.text;
+        color:
+            root.active
+                ? #1a4f78
+                : (tab-hit.has-hover ? #364a61 : #6b7c90);
+        font-size: 12px;
+        font-weight: root.active ? 700 : 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+        overflow: elide;
+    }
+}
+
+component SidebarTabBar inherits Rectangle {
+    in property <int> active-index;
+    in property <string> details-label: "Details";
+    in property <string> connections-label: "Connections";
+    in property <length> tab-slot-width;
+    callback tab-selected(int);
+    height: 36px;
+    background: #e8eef5;
+    border-radius: 8px;
+    border-color: #d2dbe7;
+    border-width: 1px;
+
+    HorizontalLayout {
+        width: parent.width;
+        height: parent.height;
+        padding: 3px;
+        spacing: 2px;
+
+        SidebarTabButton {
+            width: root.tab-slot-width;
+            text: root.details-label;
+            active: root.active-index == 0;
+            clicked => {
+                root.tab-selected(0);
+            }
+        }
+
+        SidebarTabButton {
+            width: root.tab-slot-width;
+            text: root.connections-label;
+            active: root.active-index == 1;
+            clicked => {
+                root.tab-selected(1);
+            }
+        }
     }
 }
 
@@ -413,6 +634,12 @@ export component AppWindow inherits Window {
     in property <string> selected-ul-limit: "";
     in property <bool> selected-block: false;
     in property <bool> selected-adaptive: false;
+    in property <bool> selected-show-connections: false;
+    in property <string> selected-connections-summary: "";
+    in property <[ConnectionRow]> selected-connections: [];
+    in property <bool> selected-can-disconnect-all: false;
+    in property <string> selected-connections-tab-title: "Connections";
+    in-out property <int> selected-sidebar-tab: 0;
     in property <string> summary-throughput: "DL 0 b/s / UL 0 b/s";
     in property <string> summary-global-limit: "DL Off / UL Off";
     in property <string> summary-process-limits: "0";
@@ -429,6 +656,13 @@ export component AppWindow inherits Window {
     property <string> ul-limit-header: root.speed-unit-bits ? "UL Limit Kb/s" : "UL Limit KB/s";
     property <string> dl-limit-label: root.speed-unit-bits ? "Download Kb/s" : "Download KB/s";
     property <string> ul-limit-label: root.speed-unit-bits ? "Upload Kb/s" : "Upload KB/s";
+    property <length> sidebar-content-width: 268px;
+    property <length> sidebar-tab-slot-width: 130px;
+    property <length> sidebar-details-bottom-padding: 24px;
+    property <length> sidebar-details-scroll-height:
+        (root.selected-show-connections ? 470px : 436px) + root.sidebar-details-bottom-padding;
+    property <length> sidebar-connections-viewport-height:
+        24px + root.selected-connections.length * 42px + root.sidebar-details-bottom-padding;
     // Global row is 36px; all other rows are 32px.
     property <length> table-viewport-height: root.rows.length > 0 ? root.rows.length * 32px + 4px : 0px;
 
@@ -439,11 +673,15 @@ export component AppWindow inherits Window {
     callback row-clicked(int);
     callback selection-cleared();
     callback bool-rule-edited(int, string, bool);
+    callback row-limit-submitted(int, string, string);
+    callback row-limit-focus-changed(bool);
     callback selected-limit-submitted(string, string);
     callback selected-bool-rule-edited(string, bool);
     callback sidebar-focus-changed(bool);
     callback speed-unit-bits-changed(bool);
     callback ipv6-enabled-changed(bool);
+    callback connection-disconnect-requested(string);
+    callback disconnect-all-tcp-requested();
 
     // Transparent window background lets DWM rounded corners show through; the
     // clipped chrome shell paints the visible surface.
@@ -585,16 +823,22 @@ export component AppWindow inherits Window {
                                 LimitDisplayCell {
                                     checked: row.limit_dl;
                                     text: row.dl_limit;
+                                    edit-value: row.dl_limit_edit;
                                     cell-width: 132px;
                                     highlighted: row.is_global && index != root.selected-row;
-                                    toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "limit_dl", value); }
+                                    toggled(value) => { root.bool-rule-edited(index, "limit_dl", value); }
+                                    limit-submitted(value) => { root.row-limit-submitted(index, "dl", value); }
+                                    focus-changed(focused) => { root.row-limit-focus-changed(focused); }
                                 }
                                 LimitDisplayCell {
                                     checked: row.limit_ul;
                                     text: row.ul_limit;
+                                    edit-value: row.ul_limit_edit;
                                     cell-width: 132px;
                                     highlighted: row.is_global && index != root.selected-row;
-                                    toggled(value) => { root.clear-active-inputs(); root.bool-rule-edited(index, "limit_ul", value); }
+                                    toggled(value) => { root.bool-rule-edited(index, "limit_ul", value); }
+                                    limit-submitted(value) => { root.row-limit-submitted(index, "ul", value); }
+                                    focus-changed(focused) => { root.row-limit-focus-changed(focused); }
                                 }
                                 CheckCell {
                                     checked: row.block;
@@ -612,21 +856,17 @@ export component AppWindow inherits Window {
                 }
             }
 
-            Rectangle {
-                width: root.sidebar-open ? 300px : 0px;
+            if root.sidebar-open: Rectangle {
+                width: 300px;
                 vertical-stretch: 1;
                 background: #ffffff;
                 border-color: #d7e0eb;
-                border-width: root.sidebar-open ? 1px : 0px;
+                border-width: 1px;
                 clip: true;
 
-                TouchArea {
-                    clicked => {
-                        root.clear-active-inputs();
-                    }
-                }
-
                 VerticalLayout {
+                    width: parent.width;
+                    height: parent.height;
                     padding-left: 16px;
                     padding-right: 16px;
                     padding-top: 10px;
@@ -675,59 +915,144 @@ export component AppWindow inherits Window {
 
                     Rectangle { height: 1px; background: #e2e8f0; }
 
-                    InfoPair { label: "Row Type"; value: root.selected-kind; }
-                    InfoPair { label: "PID"; value: root.selected-pid; }
-                    InfoPair { label: "PIDs"; value: root.selected-pids; }
-                    InfoPair { label: "Download"; value: root.selected-dl-speed; }
-                    InfoPair { label: "Upload"; value: root.selected-ul-speed; }
-
-                    Rectangle { height: 1px; background: #e2e8f0; }
-
-                    SidebarLabel { text: "LIMITS"; }
-
-                    SidebarCheck {
-                        text: "Limit download";
-                        checked: root.selected-limit-dl;
-                        toggled(value) => { root.selected-bool-rule-edited("limit_dl", value); }
+                    if root.selected-show-connections: SidebarTabBar {
+                        width: root.sidebar-content-width;
+                        tab-slot-width: root.sidebar-tab-slot-width;
+                        active-index: root.selected-sidebar-tab;
+                        connections-label: root.selected-connections-tab-title;
+                        tab-selected(index) => {
+                            root.selected-sidebar-tab = index;
+                        }
                     }
 
-                    SidebarInput {
-                        label: root.dl-limit-label;
-                        value: root.selected-dl-limit;
-                        submitted(value) => { root.selected-limit-submitted("dl", value); }
-                        focus-changed(value) => { root.sidebar-focus-changed(value); }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        width: root.sidebar-content-width;
+                        clip: true;
+
+                        if !root.selected-show-connections || root.selected-sidebar-tab == 0: ScrollView {
+                            width: root.sidebar-content-width;
+                            height: parent.height;
+                            viewport-width: root.sidebar-content-width;
+                            viewport-height: root.sidebar-details-scroll-height;
+
+                            VerticalLayout {
+                                width: root.sidebar-content-width;
+                                spacing: 6px;
+
+                                InfoPair { label: "Row Type"; value: root.selected-kind; }
+                                InfoPair { label: "PID"; value: root.selected-pid; }
+                                InfoPair { label: "PIDs"; value: root.selected-pids; }
+                                InfoPair { label: "Download"; value: root.selected-dl-speed; }
+                                InfoPair { label: "Upload"; value: root.selected-ul-speed; }
+
+                                Rectangle { height: 1px; background: #e2e8f0; }
+
+                                SidebarLabel { text: "LIMITS"; }
+
+                                SidebarCheck {
+                                    text: "Limit download";
+                                    checked: root.selected-limit-dl;
+                                    toggled(value) => { root.selected-bool-rule-edited("limit_dl", value); }
+                                }
+
+                                SidebarInput {
+                                    label: root.dl-limit-label;
+                                    value: root.selected-dl-limit;
+                                    submitted(value) => { root.selected-limit-submitted("dl", value); }
+                                    focus-changed(value) => { root.sidebar-focus-changed(value); }
+                                }
+
+                                SidebarCheck {
+                                    text: "Limit upload";
+                                    checked: root.selected-limit-ul;
+                                    toggled(value) => { root.selected-bool-rule-edited("limit_ul", value); }
+                                }
+
+                                SidebarInput {
+                                    label: root.ul-limit-label;
+                                    value: root.selected-ul-limit;
+                                    submitted(value) => { root.selected-limit-submitted("ul", value); }
+                                    focus-changed(value) => { root.sidebar-focus-changed(value); }
+                                }
+
+                                Rectangle { height: 1px; background: #e2e8f0; }
+
+                                SidebarLabel { text: "ACTIONS"; }
+
+                                HorizontalLayout {
+                                    width: root.sidebar-content-width;
+                                    height: 28px;
+                                    spacing: 8px;
+
+                                    SidebarCheck {
+                                        horizontal-stretch: 1;
+                                        text: "Block traffic";
+                                        checked: root.selected-block;
+                                        toggled(value) => { root.selected-bool-rule-edited("block", value); }
+                                    }
+
+                                    SidebarCheck {
+                                        horizontal-stretch: 1;
+                                        text: "Adaptive";
+                                        checked: root.selected-adaptive;
+                                        toggled(value) => { root.selected-bool-rule-edited("adaptive", value); }
+                                    }
+                                }
+
+                                if root.selected-show-connections: Rectangle {
+                                    height: 1px;
+                                    background: #e2e8f0;
+                                }
+
+                                if root.selected-show-connections: SidebarActionButton {
+                                    width: root.sidebar-content-width;
+                                    text: "Disconnect all";
+                                    enabled: root.selected-can-disconnect-all;
+                                    clicked => {
+                                        root.disconnect-all-tcp-requested();
+                                    }
+                                }
+
+                                Rectangle {
+                                    height: root.sidebar-details-bottom-padding;
+                                    background: transparent;
+                                }
+                            }
+                        }
+
+                        if root.selected-show-connections && root.selected-sidebar-tab == 1: ScrollView {
+                            width: root.sidebar-content-width;
+                            height: parent.height;
+                            viewport-width: root.sidebar-content-width;
+                            viewport-height: root.sidebar-connections-viewport-height;
+
+                            VerticalLayout {
+                                width: root.sidebar-content-width;
+                                spacing: 0px;
+
+                                Text {
+                                    text: root.selected-connections-summary;
+                                    color: #65758b;
+                                    font-size: 11px;
+                                    height: 20px;
+                                    overflow: elide;
+                                }
+
+                                for conn in root.selected-connections: ConnectionRowItem {
+                                    connection: conn;
+                                    disconnect-requested(key) => {
+                                        root.connection-disconnect-requested(key);
+                                    }
+                                }
+
+                                Rectangle {
+                                    height: root.sidebar-details-bottom-padding;
+                                    background: transparent;
+                                }
+                            }
+                        }
                     }
-
-                    SidebarCheck {
-                        text: "Limit upload";
-                        checked: root.selected-limit-ul;
-                        toggled(value) => { root.selected-bool-rule-edited("limit_ul", value); }
-                    }
-
-                    SidebarInput {
-                        label: root.ul-limit-label;
-                        value: root.selected-ul-limit;
-                        submitted(value) => { root.selected-limit-submitted("ul", value); }
-                        focus-changed(value) => { root.sidebar-focus-changed(value); }
-                    }
-
-                    Rectangle { height: 1px; background: #e2e8f0; }
-
-                    SidebarLabel { text: "ACTIONS"; }
-
-                    SidebarCheck {
-                        text: "Block traffic";
-                        checked: root.selected-block;
-                        toggled(value) => { root.selected-bool-rule-edited("block", value); }
-                    }
-
-                    SidebarCheck {
-                        text: "Adaptive";
-                        checked: root.selected-adaptive;
-                        toggled(value) => { root.selected-bool-rule-edited("adaptive", value); }
-                    }
-
-                    Rectangle { vertical-stretch: 1; }
                 }
             }
         }

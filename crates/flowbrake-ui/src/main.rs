@@ -8,11 +8,13 @@ use std::time::{Duration, Instant};
 use flowbrake_core::{
     build_process_rows, compute_adaptive_rate, format_limit_kibps, format_limit_summary,
     format_speed, parse_limit_input, Direction, GlobalRule, ProcessRow as CoreProcessRow,
-    ProcessRule, RollingAverage, RowKind, SortColumn, SortDirection, SpeedUnit,
+    ProcessRule, RollingAverage, RowKind, SortColumn, SortDirection, SpeedUnit, TcpConnection,
+    TcpConnectionKey,
 };
 use flowbrake_windows::{
-    computer_name, get_network_processes, is_elevated, process_icon, relaunch_as_admin,
-    show_admin_required_message, EngineCommand, NetworkEngine, ProcessMetadataCache, RelaunchResult,
+    close_tcp_connection, close_tcp_connections_for_pids, computer_name, get_network_processes,
+    is_elevated, list_tcp_connections, process_icon, relaunch_as_admin, show_admin_required_message,
+    EngineCommand, NetworkEngine, ProcessMetadataCache, RelaunchResult,
 };
 use slint::{
     CloseRequestResponse, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer,
@@ -30,6 +32,8 @@ mod window_chrome;
 use settings::AppSettings;
 
 slint::include_modules!();
+
+const MAX_VISIBLE_CONNECTIONS: usize = 200;
 
 struct AppState {
     engine: NetworkEngine,
@@ -57,6 +61,8 @@ struct AppState {
     table_fingerprint: TableFingerprint,
     ui_rows: Option<StdRc<VecModel<ProcessRow>>>,
     computer_name: String,
+    connections_by_pid: HashMap<u32, Vec<TcpConnection>>,
+    all_connections: Vec<TcpConnection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +114,39 @@ impl AppState {
             },
             ui_rows: None,
             computer_name: computer_name(),
+            connections_by_pid: HashMap::new(),
+            all_connections: Vec::new(),
         }
+    }
+
+    fn refresh_connections(&mut self) {
+        self.all_connections = list_tcp_connections(self.ipv6_enabled);
+        self.connections_by_pid.clear();
+        for connection in &self.all_connections {
+            self.connections_by_pid
+                .entry(connection.pid)
+                .or_default()
+                .push(connection.clone());
+        }
+    }
+
+    fn connections_for_pids(&self, pids: &[u32]) -> Vec<TcpConnection> {
+        let mut connections: Vec<TcpConnection> = pids
+            .iter()
+            .flat_map(|pid| {
+                self.connections_by_pid
+                    .get(pid)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+            })
+            .collect();
+        connections.sort_by(|left, right| {
+            left.display_remote()
+                .cmp(&right.display_remote())
+                .then_with(|| left.pid.cmp(&right.pid))
+        });
+        connections
     }
 
     fn set_speed_unit(&mut self, unit: SpeedUnit) {
@@ -126,18 +164,22 @@ impl AppState {
         }
     }
 
-    fn set_ipv6_enabled(&mut self, enabled: bool) -> Result<(), String> {
+    fn set_ipv6_enabled(&mut self, enabled: bool) -> bool {
         if self.ipv6_enabled == enabled {
-            return Ok(());
+            return false;
         }
         self.ipv6_enabled = enabled;
         self.engine.set_ipv6_enabled(enabled);
-        if self.engine.is_running() {
-            self.engine.stop();
-            self.push_all_rules();
-            self.engine.start().map_err(|err| err.to_string())?;
+        true
+    }
+
+    fn restart_engine(&mut self) -> Result<(), String> {
+        if !self.engine.is_running() {
+            return Ok(());
         }
-        Ok(())
+        self.engine.stop();
+        self.push_all_rules();
+        self.engine.start().map_err(|err| err.to_string())
     }
 
     fn fetch_processes(&mut self) -> Vec<flowbrake_core::ProcessInfo> {
@@ -344,6 +386,24 @@ impl AppState {
         let Some(kibps) = parse_limit_input(text, self.speed_unit) else {
             return;
         };
+        self.suppress_table_refresh_until = Some(Instant::now() + Duration::from_secs(2));
+        let mut rule = row.rule.clone();
+        match direction {
+            "dl" => rule.download_kbps = kibps,
+            "ul" => rule.upload_kbps = kibps,
+            _ => return,
+        }
+        self.apply_rule_to_row(&row.kind, rule);
+    }
+
+    fn edit_row_limit(&mut self, row_index: i32, direction: &str, text: &str) {
+        let Some(row) = self.rows.get(row_index as usize).cloned() else {
+            return;
+        };
+        let Some(kibps) = parse_limit_input(text, self.speed_unit) else {
+            return;
+        };
+        self.selected = Some(RowSelection::from(&row.kind));
         self.suppress_table_refresh_until = Some(Instant::now() + Duration::from_secs(2));
         let mut rule = row.rule.clone();
         match direction {
@@ -773,7 +833,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 state.borrow_mut().toggle_row_expanded(row_index);
                 persist_settings(&app, &state);
             } else {
+                let previous = state.borrow().selected.clone();
                 state.borrow_mut().select_row(row_index);
+                if previous != state.borrow().selected {
+                    app.set_selected_sidebar_tab(0);
+                }
             }
             render_rows(&app, &state);
         });
@@ -799,6 +863,26 @@ fn main() -> Result<(), slint::PlatformError> {
                 .edit_bool(row_index, field.as_str(), value);
             render_rows(&app, &state);
             persist_settings(&app, &state);
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let state = Rc::clone(&state);
+        app.on_row_limit_submitted(move |row_index, direction, value| {
+            let app = app_weak.unwrap();
+            state
+                .borrow_mut()
+                .edit_row_limit(row_index, direction.as_str(), value.as_str());
+            render_rows(&app, &state);
+            persist_settings(&app, &state);
+        });
+    }
+
+    {
+        let state = Rc::clone(&state);
+        app.on_row_limit_focus_changed(move |focused| {
+            state.borrow_mut().set_limit_editing(focused);
         });
     }
 
@@ -857,17 +941,56 @@ fn main() -> Result<(), slint::PlatformError> {
         let state = Rc::clone(&state);
         app.on_ipv6_enabled_changed(move |enabled| {
             let app = app_weak.unwrap();
-            match state.borrow_mut().set_ipv6_enabled(enabled) {
-                Ok(()) => {
-                    app.set_ipv6_enabled(enabled);
-                    app.set_running(state.borrow().engine.is_running());
-                    persist_settings(&app, &state);
-                    render_rows(&app, &state);
+            let needs_restart = {
+                let mut state_ref = state.borrow_mut();
+                if !state_ref.set_ipv6_enabled(enabled) {
+                    return;
                 }
-                Err(err) => {
+                state_ref.engine.is_running()
+            };
+            if needs_restart {
+                if let Err(err) = state.borrow_mut().restart_engine() {
                     app.set_status_text(err.into());
                 }
             }
+            app.set_ipv6_enabled(enabled);
+            app.set_running(state.borrow().engine.is_running());
+            persist_settings(&app, &state);
+            render_rows(&app, &state);
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let state = Rc::clone(&state);
+        app.on_connection_disconnect_requested(move |key| {
+            let app = app_weak.unwrap();
+            if let Some(conn_key) = TcpConnectionKey::decode_id(key.as_str()) {
+                let _ = close_tcp_connection(&conn_key);
+            }
+            state.borrow_mut().refresh_connections();
+            update_selected_sidebar(&app, &state);
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let state = Rc::clone(&state);
+        app.on_disconnect_all_tcp_requested(move || {
+            let app = app_weak.unwrap();
+            let (pids, connections) = {
+                let state_ref = state.borrow();
+                let pids = state_ref
+                    .selected_row()
+                    .map(|row| pids_for_row_kind(&row.kind))
+                    .unwrap_or_default();
+                (pids, state_ref.all_connections.clone())
+            };
+            if !pids.is_empty() {
+                close_tcp_connections_for_pids(&pids, &connections);
+            }
+            state.borrow_mut().refresh_connections();
+            update_selected_sidebar(&app, &state);
         });
     }
 
@@ -930,11 +1053,16 @@ fn main() -> Result<(), slint::PlatformError> {
         let state = Rc::clone(&state);
         timer.start(TimerMode::Repeated, Duration::from_secs(1), move || {
             let app = app_weak.unwrap();
-            let status = state.borrow_mut().tick();
+            let Ok(mut state_ref) = state.try_borrow_mut() else {
+                return;
+            };
+            let status = state_ref.tick();
             app.set_window_maximized(app.window().is_maximized());
             app.set_running(status.running);
             app.set_status_text(status.text.into());
-            if state.borrow().can_refresh_table() {
+            let refresh_table = state_ref.can_refresh_table();
+            drop(state_ref);
+            if refresh_table {
                 refresh_table_on_tick(&app, &state);
             }
         });
@@ -947,13 +1075,19 @@ fn main() -> Result<(), slint::PlatformError> {
         tray_timer.start(TimerMode::Repeated, Duration::from_millis(200), move || {
             let app = app_weak.unwrap();
             let action = state
-                .borrow()
-                .tray
-                .as_ref()
-                .and_then(TrayController::poll_action);
+                .try_borrow()
+                .ok()
+                .and_then(|state_ref| {
+                    state_ref
+                        .tray
+                        .as_ref()
+                        .and_then(TrayController::poll_action)
+                });
             match action {
                 Some(TrayAction::Open) => {
-                    state.borrow().set_tray_visible(false);
+                    if let Ok(state_ref) = state.try_borrow() {
+                        state_ref.set_tray_visible(false);
+                    }
                     let _ = app.show();
                     app.set_window_maximized(app.window().is_maximized());
                     let mut appearance_sync = window_chrome::WindowAppearanceSync::new(app.window());
@@ -962,7 +1096,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 Some(TrayAction::Exit) => {
                     persist_settings(&app, &state);
                     apply_engine_stop(&app, &state);
-                    state.borrow_mut().full_exit();
+                    if let Ok(mut state_ref) = state.try_borrow_mut() {
+                        state_ref.full_exit();
+                    }
                     let _ = app.hide();
                     slint::quit_event_loop().ok();
                 }
@@ -1036,6 +1172,7 @@ fn sum_group_speed(
 
 fn refresh_table_on_tick(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     let mut state_ref = state.borrow_mut();
+    state_ref.refresh_connections();
     let processes = state_ref.fetch_processes();
     state_ref.apply_name_rules_from(&processes);
     let fingerprint = TableFingerprint::from_processes(&processes, &state_ref.expanded);
@@ -1090,6 +1227,7 @@ fn publish_speed_updates(app: &AppWindow, state: &AppState) {
 
 fn render_rows(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     let mut state_ref = state.borrow_mut();
+    state_ref.refresh_connections();
     state_ref.rebuild_rows();
     publish_full_table(app, &mut state_ref);
     update_summary_panel(app, &state_ref);
@@ -1141,8 +1279,11 @@ fn update_selected_sidebar(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         app.set_selected_ul_limit("".into());
         app.set_selected_block(false);
         app.set_selected_adaptive(false);
+        clear_connections_sidebar(app);
         return;
     };
+
+    let show_connections = !matches!(row.kind, RowKind::Global);
 
     let (title, kind, pid, pids) = match &row.kind {
         RowKind::Global => (
@@ -1192,6 +1333,76 @@ fn update_selected_sidebar(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     app.set_selected_ul_limit(limit_text(row.rule.upload_kbps, state.speed_unit));
     app.set_selected_block(row.rule.block_all);
     app.set_selected_adaptive(row.rule.adaptive);
+
+    if show_connections {
+        let pids = pids_for_row_kind(&row.kind);
+        let connections = state.connections_for_pids(&pids);
+        let total = connections.len();
+        let visible = connections
+            .iter()
+            .take(MAX_VISIBLE_CONNECTIONS)
+            .map(|connection| to_ui_connection_row(connection, pids.len() > 1))
+            .collect::<Vec<_>>();
+        let disconnectable = connections
+            .iter()
+            .any(|connection| connection.state.is_disconnectable() && !connection.key.ipv6);
+        app.set_selected_show_connections(true);
+        app.set_selected_connections_summary(connections_summary(total).into());
+        app.set_selected_connections_tab_title(connections_tab_title(total).into());
+        app.set_selected_can_disconnect_all(disconnectable);
+        app.set_selected_connections(ModelRc::new(VecModel::from(visible)));
+    } else {
+        clear_connections_sidebar(app);
+    }
+}
+
+fn clear_connections_sidebar(app: &AppWindow) {
+    app.set_selected_show_connections(false);
+    app.set_selected_connections_summary("".into());
+    app.set_selected_connections_tab_title("Connections".into());
+    app.set_selected_sidebar_tab(0);
+    app.set_selected_can_disconnect_all(false);
+    app.set_selected_connections(ModelRc::new(VecModel::from(Vec::<ConnectionRow>::new())));
+}
+
+fn connections_tab_title(total: usize) -> String {
+    if total == 0 {
+        "Connections".to_string()
+    } else {
+        format!("Connections ({total})")
+    }
+}
+
+fn pids_for_row_kind(kind: &RowKind) -> Vec<u32> {
+    match kind {
+        RowKind::Global => Vec::new(),
+        RowKind::Group { pids, .. } => pids.clone(),
+        RowKind::Child { pid, .. } => vec![*pid],
+    }
+}
+
+fn connections_summary(total: usize) -> String {
+    if total == 0 {
+        return "No active TCP connections".to_string();
+    }
+    if total > MAX_VISIBLE_CONNECTIONS {
+        return format!("Showing {MAX_VISIBLE_CONNECTIONS} of {total} TCP connections");
+    }
+    format!("{total} TCP connection{}", if total == 1 { "" } else { "s" })
+}
+
+fn to_ui_connection_row(connection: &TcpConnection, show_pid: bool) -> ConnectionRow {
+    let detail = if show_pid {
+        format!("PID {} · {}", connection.pid, connection.state.label())
+    } else {
+        connection.state.label().to_string()
+    };
+    ConnectionRow {
+        key: connection.key.encode_id().into(),
+        label: connection.display_remote().into(),
+        detail: detail.into(),
+        disconnectable: connection.state.is_disconnectable() && !connection.key.ipv6,
+    }
 }
 
 fn join_pids(pids: &[u32]) -> String {
@@ -1304,8 +1515,10 @@ fn to_ui_row(
         ul_speed: SharedString::from(format_speed(row.ul_bps, unit)),
         limit_dl: row.rule.limit_download,
         dl_limit: limit_display_text(row.rule.limit_download, row.rule.download_kbps, unit),
+        dl_limit_edit: limit_text(row.rule.download_kbps, unit),
         limit_ul: row.rule.limit_upload,
         ul_limit: limit_display_text(row.rule.limit_upload, row.rule.upload_kbps, unit),
+        ul_limit_edit: limit_text(row.rule.upload_kbps, unit),
         block: row.rule.block_all,
         adaptive: row.rule.adaptive,
         is_global,
