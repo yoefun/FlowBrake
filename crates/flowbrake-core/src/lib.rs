@@ -327,10 +327,7 @@ impl TcpConnectionKey {
         let version = if self.ipv6 { "6" } else { "4" };
         format!(
             "{version}|{}|{}|{}|{}",
-            self.local.addr,
-            self.local.port,
-            self.remote.addr,
-            self.remote.port
+            self.local.addr, self.local.port, self.remote.addr, self.remote.port
         )
     }
 

@@ -13,8 +13,9 @@ use flowbrake_core::{
 };
 use flowbrake_windows::{
     close_tcp_connection, close_tcp_connections_for_pids, computer_name, get_network_processes,
-    is_elevated, list_tcp_connections, process_icon, relaunch_as_admin, show_admin_required_message,
-    EngineCommand, NetworkEngine, ProcessMetadataCache, RelaunchResult,
+    is_elevated, list_tcp_connections, process_icon, relaunch_as_admin,
+    show_admin_required_message, EngineCommand, NetworkEngine, ProcessMetadataCache,
+    RelaunchResult,
 };
 use slint::{
     CloseRequestResponse, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer,
@@ -72,7 +73,10 @@ struct TableFingerprint {
 }
 
 impl TableFingerprint {
-    fn from_processes(processes: &[flowbrake_core::ProcessInfo], expanded: &HashSet<String>) -> Self {
+    fn from_processes(
+        processes: &[flowbrake_core::ProcessInfo],
+        expanded: &HashSet<String>,
+    ) -> Self {
         let mut pids: Vec<u32> = processes.iter().map(|process| process.pid).collect();
         pids.sort_unstable();
         let mut expanded: Vec<String> = expanded.iter().cloned().collect();
@@ -1011,13 +1015,17 @@ fn main() -> Result<(), slint::PlatformError> {
     let init_window_appearance_timer = Timer::default();
     {
         let app_weak = app.as_weak();
-        init_window_appearance_timer.start(TimerMode::SingleShot, Duration::from_millis(100), move || {
-            let Some(app) = app_weak.upgrade() else {
-                return;
-            };
-            let mut appearance_sync = window_chrome::WindowAppearanceSync::new(app.window());
-            let _ = appearance_sync.force(app.window());
-        });
+        init_window_appearance_timer.start(
+            TimerMode::SingleShot,
+            Duration::from_millis(100),
+            move || {
+                let Some(app) = app_weak.upgrade() else {
+                    return;
+                };
+                let mut appearance_sync = window_chrome::WindowAppearanceSync::new(app.window());
+                let _ = appearance_sync.force(app.window());
+            },
+        );
     }
 
     let appearance_timer = Timer::default();
@@ -1074,15 +1082,12 @@ fn main() -> Result<(), slint::PlatformError> {
         let state = Rc::clone(&state);
         tray_timer.start(TimerMode::Repeated, Duration::from_millis(200), move || {
             let app = app_weak.unwrap();
-            let action = state
-                .try_borrow()
-                .ok()
-                .and_then(|state_ref| {
-                    state_ref
-                        .tray
-                        .as_ref()
-                        .and_then(TrayController::poll_action)
-                });
+            let action = state.try_borrow().ok().and_then(|state_ref| {
+                state_ref
+                    .tray
+                    .as_ref()
+                    .and_then(TrayController::poll_action)
+            });
             match action {
                 Some(TrayAction::Open) => {
                     if let Ok(state_ref) = state.try_borrow() {
@@ -1090,7 +1095,8 @@ fn main() -> Result<(), slint::PlatformError> {
                     }
                     let _ = app.show();
                     app.set_window_maximized(app.window().is_maximized());
-                    let mut appearance_sync = window_chrome::WindowAppearanceSync::new(app.window());
+                    let mut appearance_sync =
+                        window_chrome::WindowAppearanceSync::new(app.window());
                     let _ = appearance_sync.force(app.window());
                 }
                 Some(TrayAction::Exit) => {
@@ -1154,11 +1160,7 @@ fn handle_close_request(app: &AppWindow, state: &Rc<RefCell<AppState>>) -> Close
     }
 }
 
-fn sum_group_speed(
-    pids: &[u32],
-    speeds: &HashMap<u32, (f64, f64)>,
-    direction: Direction,
-) -> f64 {
+fn sum_group_speed(pids: &[u32], speeds: &HashMap<u32, (f64, f64)>, direction: Direction) -> f64 {
     pids.iter()
         .map(|pid| {
             let (dl_bps, ul_bps) = speeds.get(pid).copied().unwrap_or_default();
@@ -1293,9 +1295,7 @@ fn update_selected_sidebar(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
             "All traffic".to_string(),
         ),
         RowKind::Group {
-            display_name,
-            pids,
-            ..
+            display_name, pids, ..
         } => (
             display_name.clone(),
             if pids.len() > 1 {
@@ -1388,7 +1388,10 @@ fn connections_summary(total: usize) -> String {
     if total > MAX_VISIBLE_CONNECTIONS {
         return format!("Showing {MAX_VISIBLE_CONNECTIONS} of {total} TCP connections");
     }
-    format!("{total} TCP connection{}", if total == 1 { "" } else { "s" })
+    format!(
+        "{total} TCP connection{}",
+        if total == 1 { "" } else { "s" }
+    )
 }
 
 fn to_ui_connection_row(connection: &TcpConnection, show_pid: bool) -> ConnectionRow {
@@ -1533,11 +1536,8 @@ fn load_process_icon(exe_path: &str) -> Image {
     let Some(icon) = process_icon(path) else {
         return Image::default();
     };
-    let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-        &icon.rgba,
-        icon.width,
-        icon.height,
-    );
+    let buffer =
+        SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&icon.rgba, icon.width, icon.height);
     Image::from_rgba8(buffer)
 }
 

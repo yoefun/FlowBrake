@@ -133,16 +133,8 @@ fn fetch_tcp_connections(af: u32) -> Vec<TcpConnection> {
 
 fn read_tcp_table(af: u32) -> Option<Vec<u8>> {
     let mut size = 0u32;
-    let status = unsafe {
-        GetExtendedTcpTable(
-            null_mut(),
-            &mut size,
-            0,
-            af,
-            TCP_TABLE_OWNER_PID_ALL,
-            0,
-        )
-    };
+    let status =
+        unsafe { GetExtendedTcpTable(null_mut(), &mut size, 0, af, TCP_TABLE_OWNER_PID_ALL, 0) };
     if status != ERROR_INSUFFICIENT_BUFFER || size == 0 {
         return None;
     }
@@ -211,9 +203,7 @@ fn tcp_row_layout(af: u32) -> Option<(usize, usize, usize)> {
     }
 }
 
-fn tcp_connection_row_layout(
-    af: u32,
-) -> Option<(usize, usize, usize, usize, usize, usize, usize)> {
+fn tcp_connection_row_layout(af: u32) -> Option<(usize, usize, usize, usize, usize, usize, usize)> {
     match af {
         AF_INET => Some((24, 0, 4, 8, 12, 16, 20)),
         AF_INET6 => Some((56, 0, 4, 20, 24, 40, 52)),
@@ -249,8 +239,9 @@ fn parse_tcp_connections(buffer: &[u8], af: u32) -> Vec<TcpConnection> {
         }
 
         let row = &buffer[offset..end];
-        let state =
-            TcpConnectionState::from_mib_state(u32::from_ne_bytes(row[state_offset..state_offset + 4].try_into().unwrap()));
+        let state = TcpConnectionState::from_mib_state(u32::from_ne_bytes(
+            row[state_offset..state_offset + 4].try_into().unwrap(),
+        ));
         if !state.is_list_visible() {
             offset = end;
             continue;
@@ -441,9 +432,11 @@ mod tests {
         let mut table = vec![0u8; 4 + 24];
         table[0..4].copy_from_slice(&1u32.to_ne_bytes());
         table[4..8].copy_from_slice(&5u32.to_ne_bytes());
-        table[4 + 4..4 + 8].copy_from_slice(&mib_ipv4_addr(Ipv4Addr::new(192, 168, 1, 5)).to_ne_bytes());
+        table[4 + 4..4 + 8]
+            .copy_from_slice(&mib_ipv4_addr(Ipv4Addr::new(192, 168, 1, 5)).to_ne_bytes());
         table[4 + 8..4 + 12].copy_from_slice(&(54321u16.to_be() as u32).to_ne_bytes());
-        table[4 + 12..4 + 16].copy_from_slice(&mib_ipv4_addr(Ipv4Addr::new(8, 8, 8, 8)).to_ne_bytes());
+        table[4 + 12..4 + 16]
+            .copy_from_slice(&mib_ipv4_addr(Ipv4Addr::new(8, 8, 8, 8)).to_ne_bytes());
         table[4 + 16..4 + 20].copy_from_slice(&(443u16.to_be() as u32).to_ne_bytes());
         table[4 + 20..4 + 24].copy_from_slice(&123u32.to_ne_bytes());
 
@@ -464,6 +457,9 @@ mod tests {
 
         assert_eq!(map.pid_for(Protocol::Tcp, 443, false), Some(100));
         assert_eq!(map.pid_for(Protocol::Tcp, 443, true), Some(200));
-        assert_eq!(map.pids().collect::<HashSet<_>>(), HashSet::from([100, 200]));
+        assert_eq!(
+            map.pids().collect::<HashSet<_>>(),
+            HashSet::from([100, 200])
+        );
     }
 }

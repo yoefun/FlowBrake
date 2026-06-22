@@ -68,12 +68,8 @@ pub fn close_tcp_connections_for_pid(pid: u32, connections: &[TcpConnection]) ->
         .count()
 }
 
-pub fn close_tcp_connections_for_pids(
-    pids: &[u32],
-    connections: &[TcpConnection],
-) -> usize {
-    pids
-        .iter()
+pub fn close_tcp_connections_for_pids(pids: &[u32], connections: &[TcpConnection]) -> usize {
+    pids.iter()
         .map(|pid| close_tcp_connections_for_pid(*pid, connections))
         .sum()
 }

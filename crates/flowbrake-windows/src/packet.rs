@@ -92,14 +92,9 @@ fn parse_ipv6(packet: &[u8]) -> Option<IpPacket> {
         return None;
     }
 
-    let source_port = u16::from_be_bytes([
-        packet[transport_offset],
-        packet[transport_offset + 1],
-    ]);
-    let destination_port = u16::from_be_bytes([
-        packet[transport_offset + 2],
-        packet[transport_offset + 3],
-    ]);
+    let source_port = u16::from_be_bytes([packet[transport_offset], packet[transport_offset + 1]]);
+    let destination_port =
+        u16::from_be_bytes([packet[transport_offset + 2], packet[transport_offset + 3]]);
     let transport_header_len = transport_header_len(protocol, packet, transport_offset, total_len)?;
 
     Some(IpPacket {

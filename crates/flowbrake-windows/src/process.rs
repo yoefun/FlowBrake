@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Graphics::Gdi::{
     CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject, FillRect,
-    GetDC, GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    GetDC, GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    DIB_RGB_COLORS,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
@@ -16,9 +17,7 @@ use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON};
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DestroyIcon, DrawIconEx, DI_NORMAL, HICON,
-};
+use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL, HICON};
 
 const ICON_SIZE: u32 = 16;
 
@@ -177,14 +176,7 @@ fn version_string(path: &Path, field: &str) -> Option<String> {
     }
 
     let mut data = vec![0u8; size as usize];
-    let ok = unsafe {
-        GetFileVersionInfoW(
-            path_wide.as_ptr(),
-            0,
-            size,
-            data.as_mut_ptr().cast(),
-        )
-    };
+    let ok = unsafe { GetFileVersionInfoW(path_wide.as_ptr(), 0, size, data.as_mut_ptr().cast()) };
     if ok == 0 {
         return None;
     }
