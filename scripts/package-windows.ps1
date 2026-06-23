@@ -16,6 +16,10 @@ if (-not (Test-Path -LiteralPath $binaryPath)) {
     throw "Missing release binary: $binaryPath. Run cargo build -p flowbrake-ui --release first."
 }
 
+if ([string]::IsNullOrWhiteSpace($Version) -and $env:GITHUB_REF_TYPE -eq "tag" -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_REF_NAME)) {
+    $Version = $env:GITHUB_REF_NAME -replace '^v', ''
+}
+
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
     $uiPackage = $metadata.packages | Where-Object { $_.name -eq "flowbrake-ui" } | Select-Object -First 1
