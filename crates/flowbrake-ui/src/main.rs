@@ -62,6 +62,7 @@ struct AppState {
     table_fingerprint: TableFingerprint,
     ui_rows: Option<StdRc<VecModel<ProcessRow>>>,
     computer_name: String,
+    process_search: String,
     connections_by_pid: HashMap<u32, Vec<TcpConnection>>,
     all_connections: Vec<TcpConnection>,
 }
@@ -118,6 +119,7 @@ impl AppState {
             },
             ui_rows: None,
             computer_name: computer_name(),
+            process_search: String::new(),
             connections_by_pid: HashMap::new(),
             all_connections: Vec::new(),
         }
@@ -623,6 +625,60 @@ impl AppState {
             .map(|index| index as i32)
             .unwrap_or(-1)
     }
+
+    fn apply_search_locate(&mut self) -> bool {
+        let search = self.process_search.trim();
+        if search.is_empty() {
+            return false;
+        }
+
+        let mut expanded_any = false;
+        for row in &self.rows {
+            let RowKind::Group {
+                process_name,
+                pids,
+                expanded,
+                ..
+            } = &row.kind
+            else {
+                continue;
+            };
+            if *expanded || pids.len() <= 1 {
+                continue;
+            }
+            if row_matches_search(row, search, &self.computer_name) {
+                self.expanded.insert(process_name.to_lowercase());
+                expanded_any = true;
+            }
+        }
+        expanded_any
+    }
+
+    fn select_search_match(&mut self) {
+        let search = self.process_search.trim();
+        if search.is_empty() {
+            return;
+        }
+
+        let index = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| !matches!(row.kind, RowKind::Global))
+            .find(|(_, row)| row_matches_search(row, search, &self.computer_name))
+            .map(|(index, _)| index)
+            .or_else(|| {
+                self.rows
+                    .iter()
+                    .enumerate()
+                    .find(|(_, row)| row_matches_search(row, search, &self.computer_name))
+                    .map(|(index, _)| index)
+            });
+
+        if let Some(index) = index {
+            self.selected = Some(RowSelection::from(&self.rows[index].kind));
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -824,6 +880,43 @@ fn main() -> Result<(), slint::PlatformError> {
         app.on_window_close_requested(move || {
             let app = app_weak.unwrap();
             let _ = handle_close_request(&app, &state);
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let state = Rc::clone(&state);
+        app.on_process_search_changed(move |text| {
+            let app = app_weak.unwrap();
+            let mut state_ref = state.borrow_mut();
+            state_ref.process_search = text.to_string();
+
+            let search = state_ref.process_search.trim();
+            if search.is_empty() {
+                publish_full_table(&app, &mut state_ref);
+                drop(state_ref);
+                update_selected_sidebar(&app, &state);
+                return;
+            }
+
+            let needs_rebuild = state_ref.apply_search_locate();
+            if needs_rebuild {
+                state_ref.rebuild_rows();
+                persist_settings(&app, &state);
+            }
+            state_ref.select_search_match();
+            let scroll_index = state_ref.selected_row_index();
+            let scroll_y = if scroll_index >= 0 {
+                row_scroll_offset(&state_ref.rows, scroll_index as usize)
+            } else {
+                0.0
+            };
+            publish_full_table(&app, &mut state_ref);
+            if scroll_index >= 0 {
+                app.set_table_scroll_y(scroll_y);
+            }
+            drop(state_ref);
+            update_selected_sidebar(&app, &state);
         });
     }
 
@@ -1170,6 +1263,73 @@ fn sum_group_speed(pids: &[u32], speeds: &HashMap<u32, (f64, f64)>, direction: D
             }
         })
         .sum()
+}
+
+fn fuzzy_match(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+
+    let haystack = haystack.to_lowercase();
+    let needle = needle.to_lowercase();
+    let mut hay_chars = haystack.chars();
+
+    for needle_char in needle.chars() {
+        loop {
+            match hay_chars.next() {
+                Some(hay_char) if hay_char == needle_char => break,
+                Some(_) => continue,
+                None => return false,
+            }
+        }
+    }
+
+    true
+}
+
+fn row_search_texts(row: &CoreProcessRow, computer_name: &str) -> Vec<String> {
+    match &row.kind {
+        RowKind::Global => vec![computer_name.to_string()],
+        RowKind::Group {
+            process_name,
+            display_name,
+            pids,
+            ..
+        } => {
+            let mut values = vec![display_name.clone(), process_name.clone()];
+            values.extend(pids.iter().map(|pid| pid.to_string()));
+            values
+        }
+        RowKind::Child {
+            process_name,
+            display_name,
+            pid,
+            ..
+        } => vec![
+            format!("PID {pid}"),
+            pid.to_string(),
+            display_name.clone(),
+            process_name.clone(),
+        ],
+    }
+}
+
+fn row_matches_search(row: &CoreProcessRow, search: &str, computer_name: &str) -> bool {
+    row_search_texts(row, computer_name)
+        .iter()
+        .any(|value| fuzzy_match(value, search))
+}
+
+fn row_scroll_offset(rows: &[CoreProcessRow], index: usize) -> f32 {
+    rows.iter().take(index).map(row_height_px).sum()
+}
+
+fn row_height_px(row: &CoreProcessRow) -> f32 {
+    if matches!(row.kind, RowKind::Global) {
+        36.0
+    } else {
+        32.0
+    }
 }
 
 fn refresh_table_on_tick(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
@@ -1611,5 +1771,33 @@ mod tests {
         assert_eq!(runtime.upload_kbps, 0);
         assert_eq!(runtime.target_bps(Direction::Download), Some(131_072.0));
         assert_eq!(runtime.target_bps(Direction::Upload), None);
+    }
+
+    #[test]
+    fn fuzzy_match_is_case_insensitive_and_subsequence_based() {
+        assert!(fuzzy_match("Google Chrome", "gochr"));
+        assert!(fuzzy_match("Google Chrome", "CHROME"));
+        assert!(!fuzzy_match("Google Chrome", "xyz"));
+    }
+
+    #[test]
+    fn row_scroll_offset_accounts_for_global_row_height() {
+        let rows = vec![
+            CoreProcessRow::global(GlobalRule::default()),
+            CoreProcessRow {
+                kind: RowKind::Group {
+                    process_name: "chrome.exe".to_string(),
+                    display_name: "Google Chrome".to_string(),
+                    exe_path: String::new(),
+                    pids: vec![100],
+                    expanded: false,
+                },
+                dl_bps: 0.0,
+                ul_bps: 0.0,
+                rule: ProcessRule::default(),
+            },
+        ];
+
+        assert_eq!(row_scroll_offset(&rows, 1), 36.0);
     }
 }

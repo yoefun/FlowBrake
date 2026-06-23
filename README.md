@@ -3,24 +3,31 @@
 ![FlowBrake app icon](assets/app-icon.png)
 
 FlowBrake is a lightweight Windows network limiter written in Rust. It uses
-WinDivert to intercept IPv4 TCP/UDP traffic, maps packets back to owning
-processes with the Windows IP Helper API, and provides a Slint-based desktop UI
-for per-process and global throttling.
+WinDivert to intercept IPv4 and optional IPv6 TCP/UDP traffic, maps packets back
+to owning processes with the Windows IP Helper API, and provides a Slint-based
+desktop UI for per-process and global throttling.
 
 This repository contains the Rust rewrite only. The earlier C# / WinForms
 implementation and generated .NET publish artifacts have been removed.
 
 ## Features
 
-- Per-process download and upload limits in KB/s
+- Per-process download and upload limits in KB/s (or Kb/s in ISP units)
 - Global download and upload limits for all traffic
 - Process grouping by executable name, with optional per-PID expansion
 - Block-all switches for global or per-process traffic
-- TCP connection list in the sidebar with per-connection and bulk disconnect (IPv4)
 - Adaptive mode that adjusts token-bucket rates toward the configured target
-- Live rolling speed display
+- Live rolling speed display with a status-bar summary of throughput and active rules
+- TCP connection list in the detail sidebar, with per-connection and bulk disconnect (IPv4)
+- Process search that filters rows by executable name or PID
+- Detail sidebar for editing limits, block, and adaptive settings on the selected row
+- Process icons loaded from executable paths
+- Optional IPv6 interception and connection listing (enabled by default)
+- Speed display in ISP units (Kb/s) or standard units (KB/s)
+- Persistent settings for rules, window geometry, expanded groups, and preferences
 - System tray support while the interceptor is running
-- Windows GUI executable with embedded icon and application manifest
+- Custom frameless window chrome with DWM rounded corners
+- Windows GUI executable with embedded icon and `requireAdministrator` manifest
 
 ## Platform Support
 
@@ -33,17 +40,22 @@ Requirements:
 - Rust stable toolchain with the MSVC target
 - Visual Studio Build Tools / Windows SDK, including `link.exe` and `rc.exe`
 
-The application currently handles IPv4 TCP/UDP traffic. IPv6 packets are passed
-through unchanged.
+IPv4 TCP/UDP traffic is always intercepted. IPv6 support is optional and can be
+toggled in Settings. When IPv6 is disabled, IPv6 packets are passed through
+unchanged.
 
 ## Repository Layout
 
 ```text
 crates/flowbrake-core/      Shared rules, token bucket, formatting, grouping
 crates/flowbrake-windows/   WinDivert, IP Helper, packet parsing, engine loop
-crates/flowbrake-ui/        Slint UI, tray integration, app state
+crates/flowbrake-ui/        Slint UI, tray integration, settings, app state
+  ui/main.slint             Main window, process table, detail sidebar
+  ui/window_chrome.slint    Custom title bar and settings dropdown
+  ui/widgets.slint          Shared checkbox and control widgets
 assets/                     Compile-time application resources
-third_party/windivert/        Runtime WinDivert DLL and driver files
+third_party/windivert/      Runtime WinDivert DLL and driver files
+scripts/package-windows.ps1 Release zip packaging script
 ```
 
 ## Building
@@ -67,10 +79,11 @@ copies these runtime files next to the executable:
 - `WinDivert64.sys`
 
 The executable uses a `requireAdministrator` manifest so Windows shows the UAC
-prompt when the app is launched. After bypassing SmartScreen on a downloaded
-zip, approve the UAC prompt so WinDivert can open the network interceptor. If
-administrator approval is denied, FlowBrake exits instead of starting without
-the privileges needed for traffic limiting.
+prompt when the app is launched. If the process is not already elevated, FlowBrake
+also attempts a `runas` relaunch before starting the interceptor. After bypassing
+SmartScreen on a downloaded zip, approve the UAC prompt so WinDivert can open the
+network interceptor. If administrator approval is denied, FlowBrake exits instead
+of starting without the privileges needed for traffic limiting.
 
 To create the release zip used by CI:
 
@@ -122,10 +135,34 @@ Use the UI as follows:
 3. Enable the corresponding download or upload checkbox to apply the limit.
 4. Use `Block` to drop all matching traffic for a row.
 5. Use `Adaptive` to make the limiter adjust toward the displayed target.
-6. Close the window while running to keep the app in the system tray.
+6. Click a row to open the detail sidebar and edit limits or inspect connections.
+7. Double-click a grouped row to expand or collapse its per-PID children.
+8. Use the search box above the table to filter by process name or PID.
+9. Open Settings from the title bar to switch speed units or toggle IPv6 support.
+10. Close the window while running to keep the app in the system tray.
 
 Typing a limit value alone stores it as a draft. A limit only becomes active
 when its checkbox is enabled.
+
+## Settings and Persistence
+
+FlowBrake stores settings in:
+
+```text
+%APPDATA%\FlowBrake\settings.ini
+```
+
+The file is a simple `key=value` format and persists:
+
+- Speed unit preference (`ISP units` / `Standard units`)
+- IPv6 support on/off
+- Window size, position, and maximized state
+- Expanded process groups
+- Global limit, block, and adaptive settings
+- Per-process rules keyed by executable name
+
+Rules are restored when matching processes appear again. Settings are saved when
+the window is closed, minimized to tray, or when relevant preferences change.
 
 ## How Limiting Works
 
@@ -138,6 +175,7 @@ Important details:
 - Empty TCP control packets, such as pure ACKs, do not consume rate budget.
 - Speed counters track payload bytes that were actually allowed through.
 - Global rules are evaluated before per-process rules.
+- Internal limits are stored in KiB/s regardless of the displayed unit.
 
 Because this is a drop-based limiter, very low limits can still cause TCP
 timeouts or degraded connections. A delay/queue-based limiter would be more
@@ -171,12 +209,12 @@ exception.
 ## Limitations
 
 - Windows-only
-- IPv4 only
 - Drop-based throttling can affect connection stability at very low limits
-- TCP disconnect uses `SetTcpEntry` and currently supports IPv4 connections only
-- No persistent configuration file yet
+- TCP disconnect uses `SetTcpEntry` and supports IPv4 connections only; IPv6
+  connections can be listed but not disconnected
+- IPv6 interception can be disabled, but IPv4 is always intercepted when running
 - No installer or signed driver distribution workflow yet
 
 ## License
 
-FlowBrake is licensed under the MIT License. See [LICENSE](LICENSE).
+FlowBrake is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
