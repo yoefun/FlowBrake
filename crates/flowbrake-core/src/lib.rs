@@ -194,11 +194,7 @@ pub enum SpeedUnit {
 
 impl SpeedUnit {
     pub fn from_bits_mode(bits_mode: bool) -> Self {
-        if bits_mode {
-            Self::Bits
-        } else {
-            Self::Bytes
-        }
+        if bits_mode { Self::Bits } else { Self::Bytes }
     }
 
     pub fn is_bits(self) -> bool {

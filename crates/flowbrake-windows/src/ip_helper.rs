@@ -5,8 +5,8 @@ use std::net::IpAddr;
 use std::ptr::null_mut;
 
 use flowbrake_core::{
-    ipv4_from_mib_addr, ipv6_from_mib_addr, ProcessInfo, SocketEndpoint, TcpConnection,
-    TcpConnectionKey, TcpConnectionState,
+    ProcessInfo, SocketEndpoint, TcpConnection, TcpConnectionKey, TcpConnectionState,
+    ipv4_from_mib_addr, ipv6_from_mib_addr,
 };
 
 use crate::packet::Protocol;
@@ -19,7 +19,7 @@ const UDP_TABLE_OWNER_PID: u32 = 1;
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 
 #[link(name = "iphlpapi")]
-extern "system" {
+unsafe extern "system" {
     fn GetExtendedTcpTable(
         p_tcp_table: *mut c_void,
         pdw_size: *mut u32,

@@ -25,7 +25,7 @@ pub enum RelaunchResult {
 pub fn is_elevated() -> bool {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::Security::{
-        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -92,7 +92,7 @@ pub fn relaunch_as_admin(extra_args: &[&str]) -> RelaunchResult {
 }
 
 pub fn show_admin_required_message(message: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
 
     let title = string_to_wide_null("FlowBrake");
     let text = string_to_wide_null(message);

@@ -8,19 +8,19 @@ pub mod tcp;
 pub mod windivert;
 
 pub use elevation::{
-    is_elevated, relaunch_as_admin, runtime_dir, show_admin_required_message, ElevationError,
-    RelaunchResult,
+    ElevationError, RelaunchResult, is_elevated, relaunch_as_admin, runtime_dir,
+    show_admin_required_message,
 };
 pub use engine::{EngineCommand, EngineError, EngineSnapshot, NetworkEngine};
 pub use flowbrake_core::Direction;
-pub use ip_helper::{get_network_processes, list_tcp_connections, PortPidMap};
+pub use ip_helper::{PortPidMap, get_network_processes, list_tcp_connections};
 pub use packet::{IpPacket, Ipv4Packet};
 pub use process::{
-    list_running_pids, process_details, process_details_uncached, process_icon, ProcessDetails,
-    ProcessIcon, ProcessMetadataCache,
+    ProcessDetails, ProcessIcon, ProcessMetadataCache, list_running_pids, process_details,
+    process_details_uncached, process_icon,
 };
 pub use system::computer_name;
 pub use tcp::{
-    close_tcp_connection, close_tcp_connections_for_pid, close_tcp_connections_for_pids,
-    CloseTcpError,
+    CloseTcpError, close_tcp_connection, close_tcp_connections_for_pid,
+    close_tcp_connections_for_pids,
 };

@@ -1,8 +1,8 @@
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{CString, c_char, c_void};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use libloading::Library;
 use thiserror::Error;

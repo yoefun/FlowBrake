@@ -66,8 +66,8 @@ impl WindowAppearanceSync {
 pub fn apply_window_appearance(window: &slint::Window) -> bool {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows_sys::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE,
-        DWMWCP_DONOTROUND, DWMWCP_ROUND,
+        DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
+        DwmSetWindowAttribute,
     };
 
     let window_handle = window.window_handle();
@@ -119,7 +119,7 @@ pub fn start_window_drag(window: &slint::Window) -> bool {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
+        GetCursorPos, HTCAPTION, SendMessageW, WM_NCLBUTTONDOWN,
     };
 
     let window_handle = window.window_handle();

@@ -1,4 +1,4 @@
-use flowbrake_core::{mib_ipv4_addr, mib_port, TcpConnection, TcpConnectionKey};
+use flowbrake_core::{TcpConnection, TcpConnectionKey, mib_ipv4_addr, mib_port};
 use thiserror::Error;
 
 const MIB_TCP_STATE_DELETE_TCB: u32 = 12;
@@ -14,7 +14,7 @@ struct MibTcpRow {
 }
 
 #[link(name = "iphlpapi")]
-extern "system" {
+unsafe extern "system" {
     fn SetTcpEntry(p_tcp_row: *mut MibTcpRow) -> u32;
 }
 
