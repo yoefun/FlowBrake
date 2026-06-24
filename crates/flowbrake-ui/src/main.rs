@@ -852,10 +852,19 @@ fn main() -> Result<(), slint::PlatformError> {
             let app = app_weak.unwrap();
             let next_maximized = !app.window().is_maximized();
             app.window().set_maximized(next_maximized);
-            app.set_window_maximized(app.window().is_maximized());
+            app.set_window_maximized(next_maximized);
             let mut appearance_sync = window_chrome::WindowAppearanceSync::new(app.window());
             let _ = appearance_sync.force(app.window());
-            persist_settings(&app, &state);
+            {
+                let mut settings = state.borrow().to_settings();
+                settings.window_maximized = next_maximized;
+                if !next_maximized {
+                    settings.capture_window(app.window());
+                }
+                if let Err(err) = settings.save() {
+                    app.set_status_text(format!("Failed to save settings: {err}").into());
+                }
+            }
         });
     }
 
@@ -1306,9 +1315,10 @@ fn update_summary_panel(app: &AppWindow, state: &AppState) {
     app.set_summary_adaptive(adaptive.to_string().into());
 }
 
-fn update_selected_sidebar(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
-    let state = state.borrow();
+fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
+    let state = state_rc.borrow();
     let Some(row) = state.selected_row() else {
+        drop(state);
         app.set_sidebar_open(false);
         app.set_selected_title("".into());
         app.set_selected_kind("".into());

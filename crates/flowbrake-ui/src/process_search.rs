@@ -191,7 +191,10 @@ mod tests {
             },
         ];
 
-        assert_eq!(find_first_matching_row_index(&rows, "chrome", "PC"), Some(1));
+        assert_eq!(
+            find_first_matching_row_index(&rows, "chrome", "PC"),
+            Some(1)
+        );
     }
 
     #[test]

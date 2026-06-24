@@ -19,7 +19,7 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Shell::{SHFILEINFOW, SHGFI_ICON, SHGetFileInfoW};
 use windows_sys::Win32::UI::WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON};
 
-const ICON_SIZE: u32 = 16;
+const ICON_SIZE: u32 = 32;
 
 #[derive(Debug, Default)]
 pub struct ProcessMetadataCache {

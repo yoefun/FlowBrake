@@ -88,18 +88,24 @@ component IconSlot inherits Rectangle {
     in property <color> stroke-color: #28313d;
     width: 16px;
     height: 16px;
+    clip: false;
 
     if root.use-computer-icon : ComputerIcon {
         width: 16px;
         height: 16px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
         stroke-color: root.stroke-color;
     }
 
     if root.show-icon : Image {
         source: root.icon;
-        width: 16px;
-        height: 16px;
+        width: parent.width;
+        height: parent.height;
         image-fit: contain;
+        image-rendering: smooth;
+        horizontal-alignment: center;
+        vertical-alignment: center;
     }
 }
 
@@ -117,6 +123,7 @@ component ProcessCell inherits Rectangle {
     in property <color> foreground: #24303f;
     in property <bool> strong: false;
     width: 280px;
+    clip: false;
     height: root.row-height;
 
     VerticalLayout {
@@ -278,7 +285,8 @@ component LimitDisplayCell inherits Rectangle {
                 }
 
                 Rectangle {
-                    width: root.cell-width - 30px;
+                    min-width: 40px;
+                    horizontal-stretch: 1;
                     height: 26px;
                     background: root.checked ? (root.highlighted ? #244562 : #e8f2ff) : transparent;
                     border-color: root.checked ? #4a8fc8 : transparent;
@@ -748,6 +756,7 @@ export component AppWindow inherits Window {
             }
 
             HorizontalLayout {
+                width: parent.width;
                 padding-left: 12px;
                 padding-right: 12px;
                 spacing: 8px;
@@ -760,6 +769,10 @@ export component AppWindow inherits Window {
                 HeaderCell { text: root.ul-limit-header; cell-width: 132px; }
                 HeaderCell { text: "Block"; cell-width: 64px; }
                 HeaderCell { text: "Adaptive"; cell-width: 82px; }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
             }
         }
 
@@ -782,6 +795,7 @@ export component AppWindow inherits Window {
                         spacing: 0px;
 
                         for row[index] in root.rows: Rectangle {
+                            clip: false;
                             height: row.is_global ? 36px : 32px;
                             background:
                                 index == root.selected-row
@@ -800,10 +814,10 @@ export component AppWindow inherits Window {
                             }
 
                             HorizontalLayout {
+                                width: parent.width;
                                 padding-left: 12px;
                                 padding-right: 12px;
                                 spacing: 8px;
-                                alignment: center;
 
                                 ProcessCell {
                                     text: row.process;
