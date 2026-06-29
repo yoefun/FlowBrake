@@ -1002,9 +1002,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
                 state_ref.engine.is_running()
             };
-            if needs_restart
-                && let Err(err) = state.borrow_mut().restart_engine()
-            {
+            if needs_restart && let Err(err) = state.borrow_mut().restart_engine() {
                 app.set_status_text(err.into());
             }
             app.set_ipv6_enabled(enabled);
