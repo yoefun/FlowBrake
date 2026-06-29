@@ -301,12 +301,12 @@ impl AppState {
 
     fn handle_row_click(&mut self, row_index: i32) -> bool {
         let now = Instant::now();
-        if let Some((last_index, last_time)) = self.last_row_click {
-            if last_index == row_index && now.duration_since(last_time) < Duration::from_millis(400)
-            {
-                self.last_row_click = None;
-                return true;
-            }
+        if let Some((last_index, last_time)) = self.last_row_click
+            && last_index == row_index
+            && now.duration_since(last_time) < Duration::from_millis(400)
+        {
+            self.last_row_click = None;
+            return true;
         }
         self.last_row_click = Some((row_index, now));
         false
@@ -332,10 +332,10 @@ impl AppState {
         let key = process_name.to_lowercase();
         if *expanded {
             self.expanded.remove(&key);
-            if let Some(RowSelection::Child(pid)) = &self.selected {
-                if pids.contains(pid) {
-                    self.selected = Some(RowSelection::Group(key));
-                }
+            if let Some(RowSelection::Child(pid)) = &self.selected
+                && pids.contains(pid)
+            {
+                self.selected = Some(RowSelection::Group(key));
             }
         } else {
             self.expanded.insert(key);
@@ -1002,10 +1002,10 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
                 state_ref.engine.is_running()
             };
-            if needs_restart {
-                if let Err(err) = state.borrow_mut().restart_engine() {
-                    app.set_status_text(err.into());
-                }
+            if needs_restart
+                && let Err(err) = state.borrow_mut().restart_engine()
+            {
+                app.set_status_text(err.into());
             }
             app.set_ipv6_enabled(enabled);
             app.set_running(state.borrow().engine.is_running());
