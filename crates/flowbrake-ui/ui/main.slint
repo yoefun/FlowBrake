@@ -569,9 +569,10 @@ component SidebarTabBar inherits Rectangle {
 component SidebarInput inherits Rectangle {
     in property <string> label;
     in property <string> value;
+    in property <string> error: "";
     callback submitted(string);
     callback focus-changed(bool);
-    height: 48px;
+    height: root.error == "" ? 48px : 78px;
 
     VerticalLayout {
         spacing: 5px;
@@ -613,6 +614,13 @@ component SidebarInput inherits Rectangle {
                 }
             }
         }
+        if root.error != "": Text {
+            text: root.error;
+            color: #b42318;
+            font-size: 11px;
+            height: 25px;
+            wrap: word-wrap;
+        }
     }
 }
 
@@ -640,6 +648,11 @@ export component AppWindow inherits Window {
     in property <string> selected-dl-limit: "";
     in property <bool> selected-limit-ul: false;
     in property <string> selected-ul-limit: "";
+    in property <string> selected-dl-loss: "";
+    in property <string> selected-ul-loss: "";
+    in property <string> selected-dl-loss-error: "";
+    in property <string> selected-ul-loss-error: "";
+    in property <string> selected-loss-hint: "";
     in property <bool> selected-block: false;
     in property <bool> selected-adaptive: false;
     in property <bool> selected-show-connections: false;
@@ -668,7 +681,10 @@ export component AppWindow inherits Window {
     property <length> sidebar-tab-slot-width: 130px;
     property <length> sidebar-details-bottom-padding: 24px;
     property <length> sidebar-details-scroll-height:
-        (root.selected-show-connections ? 470px : 436px) + root.sidebar-details-bottom-padding;
+        (root.selected-show-connections ? 616px : 582px)
+            + (root.selected-dl-loss-error != "" ? 30px : 0px)
+            + (root.selected-ul-loss-error != "" ? 30px : 0px)
+            + root.sidebar-details-bottom-padding;
     property <length> sidebar-connections-viewport-height:
         24px + root.selected-connections.length * 42px + root.sidebar-details-bottom-padding;
     // Global row is 36px; all other rows are 32px.
@@ -684,6 +700,7 @@ export component AppWindow inherits Window {
     callback row-limit-submitted(int, string, string);
     callback row-limit-focus-changed(bool);
     callback selected-limit-submitted(string, string);
+    callback selected-loss-submitted(string, string);
     callback selected-bool-rule-edited(string, bool);
     callback sidebar-focus-changed(bool);
     callback speed-unit-bits-changed(bool);
@@ -988,6 +1005,29 @@ export component AppWindow inherits Window {
                                     value: root.selected-ul-limit;
                                     submitted(value) => { root.selected-limit-submitted("ul", value); }
                                     focus-changed(value) => { root.sidebar-focus-changed(value); }
+                                }
+
+                                SidebarInput {
+                                    label: "Download loss %";
+                                    value: root.selected-dl-loss;
+                                    error: root.selected-dl-loss-error;
+                                    submitted(value) => { root.selected-loss-submitted("dl", value); }
+                                    focus-changed(value) => { root.sidebar-focus-changed(value); }
+                                }
+
+                                SidebarInput {
+                                    label: "Upload loss %";
+                                    value: root.selected-ul-loss;
+                                    error: root.selected-ul-loss-error;
+                                    submitted(value) => { root.selected-loss-submitted("ul", value); }
+                                    focus-changed(value) => { root.sidebar-focus-changed(value); }
+                                }
+
+                                Text {
+                                    text: "0–100%, up to 2 decimals\n" + root.selected-loss-hint;
+                                    color: #65758b;
+                                    font-size: 11px;
+                                    height: 32px;
                                 }
 
                                 Rectangle { height: 1px; background: #e2e8f0; }

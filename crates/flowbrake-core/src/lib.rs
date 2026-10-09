@@ -11,6 +11,8 @@ pub struct ProcessRule {
     pub limit_upload: bool,
     pub upload_kbps: u32,
     pub adaptive: bool,
+    pub download_loss_basis_points: Option<u16>,
+    pub upload_loss_basis_points: Option<u16>,
     pub adjusted_dl_bps: f64,
     pub adjusted_ul_bps: f64,
 }
@@ -24,6 +26,8 @@ impl Default for ProcessRule {
             limit_upload: false,
             upload_kbps: 0,
             adaptive: false,
+            download_loss_basis_points: None,
+            upload_loss_basis_points: None,
             adjusted_dl_bps: 0.0,
             adjusted_ul_bps: 0.0,
         }
@@ -38,6 +42,15 @@ impl ProcessRule {
             || self.limit_upload
             || self.upload_kbps > 0
             || self.adaptive
+            || self.download_loss_basis_points.is_some()
+            || self.upload_loss_basis_points.is_some()
+    }
+
+    pub fn loss_basis_points(&self, direction: Direction) -> Option<u16> {
+        match direction {
+            Direction::Download => self.download_loss_basis_points,
+            Direction::Upload => self.upload_loss_basis_points,
+        }
     }
 
     pub fn target_bps(&self, direction: Direction) -> Option<f64> {
@@ -273,6 +286,49 @@ pub fn format_limit_summary(kibps: u32, unit: SpeedUnit) -> String {
     match unit {
         SpeedUnit::Bytes => format!("{kibps} KB/s"),
         SpeedUnit::Bits => format_speed(kibps as f64 * 1024.0, SpeedUnit::Bits),
+    }
+}
+
+pub fn parse_loss_percent(text: &str) -> Result<Option<u16>, &'static str> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+
+    let error = "Enter a percentage from 0 to 100 with at most two decimal places";
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || fraction.len() > 2
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        || (text.contains('.') && fraction.is_empty())
+    {
+        return Err(error);
+    }
+    let whole: u16 = whole.parse().map_err(|_| error)?;
+    let fraction: u16 = match fraction.len() {
+        0 => 0,
+        1 => fraction.parse::<u16>().map_err(|_| error)? * 10,
+        _ => fraction.parse().map_err(|_| error)?,
+    };
+    if whole > 100 || (whole == 100 && fraction > 0) {
+        return Err(error);
+    }
+    Ok(Some(whole * 100 + fraction))
+}
+
+pub fn format_loss_percent(basis_points: Option<u16>) -> String {
+    let Some(basis_points) = basis_points else {
+        return String::new();
+    };
+    let whole = basis_points / 100;
+    let fraction = basis_points % 100;
+    if fraction == 0 {
+        whole.to_string()
+    } else if fraction.is_multiple_of(10) {
+        format!("{whole}.{}", fraction / 10)
+    } else {
+        format!("{whole}.{fraction:02}")
     }
 }
 
@@ -638,6 +694,48 @@ fn sum_speed(pids: &[u32], speeds: &HashMap<u32, (f64, f64)>, direction: Directi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loss_percent_parses_and_formats_exact_decimal_values() {
+        assert_eq!(parse_loss_percent("  "), Ok(None));
+        assert_eq!(format_loss_percent(None), "");
+        for (text, basis_points) in [
+            ("0", 0),
+            ("0.01", 1),
+            ("1.2", 120),
+            ("99.99", 9999),
+            ("100", 10000),
+        ] {
+            assert_eq!(parse_loss_percent(text), Ok(Some(basis_points)));
+            assert_eq!(format_loss_percent(Some(basis_points)), text);
+        }
+        assert_eq!(parse_loss_percent(" 12.50 "), Ok(Some(1250)));
+        assert_eq!(format_loss_percent(Some(1250)), "12.5");
+        assert_eq!(parse_loss_percent("100.00"), Ok(Some(10000)));
+    }
+
+    #[test]
+    fn loss_percent_rejects_invalid_values_and_excess_precision() {
+        for text in [
+            "-1", "+1", "100.01", "101", "65536", "1.001", "NaN", "inf", "1e1", "1.2.3", ".5",
+            "1.", "1%",
+        ] {
+            assert!(parse_loss_percent(text).is_err(), "accepted {text}");
+        }
+    }
+
+    #[test]
+    fn zero_loss_override_is_a_rule_and_directions_are_independent() {
+        let rule = ProcessRule {
+            download_loss_basis_points: Some(0),
+            upload_loss_basis_points: Some(250),
+            ..Default::default()
+        };
+        assert!(rule.has_any_rule());
+        assert_eq!(rule.loss_basis_points(Direction::Download), Some(0));
+        assert_eq!(rule.loss_basis_points(Direction::Upload), Some(250));
+        assert!(!ProcessRule::default().has_any_rule());
+    }
 
     #[test]
     fn tcp_connection_key_round_trips_through_id_encoding() {

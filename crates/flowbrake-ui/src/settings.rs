@@ -270,6 +270,14 @@ fn parse_rule_fields(fields: &HashMap<String, String>) -> ProcessRule {
         adaptive: fields
             .get("adaptive")
             .is_some_and(|value| parse_bool(value)),
+        download_loss_basis_points: fields
+            .get("download_loss_basis_points")
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|value| *value <= 10_000),
+        upload_loss_basis_points: fields
+            .get("upload_loss_basis_points")
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|value| *value <= 10_000),
         adjusted_dl_bps: 0.0,
         adjusted_ul_bps: 0.0,
     }
@@ -292,6 +300,12 @@ fn append_rule_lines(lines: &mut Vec<String>, prefix: &str, rule: &ProcessRule) 
     ));
     lines.push(format!("{prefix}.upload_kbps={}", rule.upload_kbps));
     lines.push(format!("{prefix}.adaptive={}", bool_text(rule.adaptive)));
+    if let Some(value) = rule.download_loss_basis_points {
+        lines.push(format!("{prefix}.download_loss_basis_points={value}"));
+    }
+    if let Some(value) = rule.upload_loss_basis_points {
+        lines.push(format!("{prefix}.upload_loss_basis_points={value}"));
+    }
 }
 
 #[cfg(test)]
@@ -316,5 +330,42 @@ mod tests {
         assert!(rule.limit_download);
         assert_eq!(rule.download_kbps, 256);
         assert_eq!(rule.adjusted_dl_bps, 0.0);
+        assert_eq!(rule.download_loss_basis_points, None);
+        assert_eq!(rule.upload_loss_basis_points, None);
+    }
+
+    #[test]
+    fn loss_overrides_round_trip_including_explicit_zero() {
+        let rule = ProcessRule {
+            download_loss_basis_points: Some(0),
+            upload_loss_basis_points: Some(10_000),
+            ..Default::default()
+        };
+        let mut lines = Vec::new();
+        append_rule_lines(&mut lines, "rule.browser", &rule);
+        let fields = lines
+            .iter()
+            .map(|line| {
+                let (key, value) = line.split_once('=').unwrap();
+                (
+                    key.strip_prefix("rule.browser.").unwrap().to_string(),
+                    value.to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(parse_rule_fields(&fields), rule);
+    }
+
+    #[test]
+    fn invalid_saved_loss_values_do_not_enable_loss() {
+        for value in ["-1", "10001", "65536", "1.5", "invalid", ""] {
+            let fields = HashMap::from([
+                ("download_loss_basis_points".to_string(), value.to_string()),
+                ("upload_loss_basis_points".to_string(), value.to_string()),
+            ]);
+            let rule = parse_rule_fields(&fields);
+            assert_eq!(rule.download_loss_basis_points, None);
+            assert_eq!(rule.upload_loss_basis_points, None);
+        }
     }
 }

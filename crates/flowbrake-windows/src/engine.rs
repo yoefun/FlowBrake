@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flowbrake_core::{Direction, GlobalRule, ProcessRule, TokenBucket};
 use thiserror::Error;
@@ -41,6 +41,10 @@ pub struct EngineSnapshot {
     pub global_upload_bytes: u64,
     pub packets_processed: u64,
     pub packets_dropped: u64,
+    pub packets_blocked: u64,
+    pub packets_loss_dropped: u64,
+    pub packets_rate_dropped: u64,
+    pub packets_loss_eligible: u64,
     pub running: bool,
     pub block_error: Option<String>,
 }
@@ -60,7 +64,11 @@ struct EngineState {
     global_upload: AtomicU64,
     packets_processed: AtomicU64,
     packets_dropped: AtomicU64,
-    block_revision: AtomicU64,
+    packets_blocked: AtomicU64,
+    packets_loss_dropped: AtomicU64,
+    packets_rate_dropped: AtomicU64,
+    packets_loss_eligible: AtomicU64,
+    rule_revision: AtomicU64,
 }
 
 #[derive(Default)]
@@ -164,12 +172,12 @@ impl NetworkEngine {
                     .write()
                     .expect("global rule lock poisoned");
                 if current.block_all != rule.block_all {
-                    self.state.block_revision.fetch_add(1, Ordering::AcqRel);
+                    self.state.rule_revision.fetch_add(1, Ordering::AcqRel);
                 }
                 *current = rule;
             }
             EngineCommand::ClearRules => {
-                self.state.block_revision.fetch_add(1, Ordering::AcqRel);
+                self.state.rule_revision.fetch_add(1, Ordering::AcqRel);
                 self.state
                     .rules
                     .write()
@@ -275,6 +283,10 @@ impl NetworkEngine {
             global_upload_bytes: self.state.global_upload.swap(0, Ordering::AcqRel),
             packets_processed: self.state.packets_processed.load(Ordering::Acquire),
             packets_dropped: self.state.packets_dropped.load(Ordering::Acquire),
+            packets_blocked: self.state.packets_blocked.load(Ordering::Acquire),
+            packets_loss_dropped: self.state.packets_loss_dropped.load(Ordering::Acquire),
+            packets_rate_dropped: self.state.packets_rate_dropped.load(Ordering::Acquire),
+            packets_loss_eligible: self.state.packets_loss_eligible.load(Ordering::Acquire),
             running,
             block_error,
         }
@@ -282,8 +294,14 @@ impl NetworkEngine {
 
     fn update_rule(&self, pid: u32, rule: ProcessRule) {
         let mut rules = self.state.rules.write().expect("rules lock poisoned");
-        if rules.get(&pid).is_some_and(|current| current.block_all) != rule.block_all {
-            self.state.block_revision.fetch_add(1, Ordering::AcqRel);
+        let current = rules.get(&pid);
+        if current.is_some_and(|current| current.block_all) != rule.block_all
+            || current.and_then(|current| current.download_loss_basis_points)
+                != rule.download_loss_basis_points
+            || current.and_then(|current| current.upload_loss_basis_points)
+                != rule.upload_loss_basis_points
+        {
+            self.state.rule_revision.fetch_add(1, Ordering::AcqRel);
         }
         if rule.has_any_rule() {
             rules.insert(pid, rule);
@@ -302,6 +320,10 @@ impl NetworkEngine {
         self.state.global_upload.store(0, Ordering::Release);
         self.state.packets_processed.store(0, Ordering::Release);
         self.state.packets_dropped.store(0, Ordering::Release);
+        self.state.packets_blocked.store(0, Ordering::Release);
+        self.state.packets_loss_dropped.store(0, Ordering::Release);
+        self.state.packets_rate_dropped.store(0, Ordering::Release);
+        self.state.packets_loss_eligible.store(0, Ordering::Release);
     }
 }
 
@@ -320,11 +342,17 @@ fn recv_loop(
     let mut packet_buffer = vec![0u8; BUF_SIZE];
     let mut port_pid = PortPidMap::refresh(true);
     let mut last_map_refresh = Instant::now();
-    let mut block_revision = state.block_revision.load(Ordering::Acquire);
+    let mut rule_revision = state.rule_revision.load(Ordering::Acquire);
     let mut unresolved_ports = HashSet::new();
     let mut buckets: HashMap<(u32, Direction), (TokenBucket, Instant)> = HashMap::new();
     let mut global_dl_bucket: Option<(TokenBucket, Instant)> = None;
     let mut global_ul_bucket: Option<(TokenBucket, Instant)> = None;
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+        ^ u64::from(std::process::id());
+    let mut loss_sampler = LossSampler(seed);
 
     while !stopping.load(Ordering::Acquire) {
         let Some((read_len, mut address)) = divert.recv(&mut packet_buffer) else {
@@ -333,11 +361,11 @@ fn recv_loop(
 
         state.packets_processed.fetch_add(1, Ordering::AcqRel);
 
-        let current_revision = state.block_revision.load(Ordering::Acquire);
-        if last_map_refresh.elapsed() >= PORT_MAP_REFRESH || current_revision != block_revision {
+        let current_revision = state.rule_revision.load(Ordering::Acquire);
+        if last_map_refresh.elapsed() >= PORT_MAP_REFRESH || current_revision != rule_revision {
             port_pid = PortPidMap::refresh(true);
             last_map_refresh = Instant::now();
-            block_revision = current_revision;
+            rule_revision = current_revision;
             unresolved_ports.clear();
         }
 
@@ -346,7 +374,7 @@ fn recv_loop(
         // Global Block precedes parsing so ICMP, fragments and unsupported
         // transport headers cannot bypass it.
         if global_blocks_packet(&state, is_loopback) {
-            state.packets_dropped.fetch_add(1, Ordering::AcqRel);
+            record_drop(&state, DropReason::Block);
             continue;
         }
         let direction = if address.is_outbound() {
@@ -367,7 +395,11 @@ fn recv_loop(
                 .read()
                 .expect("rules lock poisoned")
                 .values()
-                .any(|rule| rule.block_all)
+                .any(|rule| {
+                    rule.block_all
+                        || rule.download_loss_basis_points.is_some()
+                        || rule.upload_loss_basis_points.is_some()
+                })
             && unresolved_ports.insert((packet.protocol, local_port, is_ipv6))
         {
             // Resolve newly created endpoints immediately, rather than waiting
@@ -375,28 +407,39 @@ fn recv_loop(
             port_pid = PortPidMap::refresh(true);
             pid = port_pid.pid_for(packet.protocol, local_port, is_ipv6);
         }
+        if process_blocks_packet(&state, pid, is_loopback) {
+            record_drop(&state, DropReason::Block);
+            continue;
+        }
+        if should_drop_for_loss(&state, pid, direction, is_loopback, &mut loss_sampler) {
+            record_drop(&state, DropReason::Loss);
+            continue;
+        }
         let charge_len = if is_ipv6 && !ipv6_enabled.load(Ordering::Acquire) {
             0
         } else {
             packet.payload_len
         };
 
-        if should_drop_global(
+        if let Some(reason) = should_drop_global(
             &state,
             direction,
             charge_len,
             is_loopback,
             &mut global_dl_bucket,
             &mut global_ul_bucket,
-        ) || should_drop_process(
-            &state,
-            pid,
-            direction,
-            charge_len,
-            is_loopback,
-            &mut buckets,
-        ) {
-            state.packets_dropped.fetch_add(1, Ordering::AcqRel);
+        )
+        .or_else(|| {
+            should_drop_process(
+                &state,
+                pid,
+                direction,
+                charge_len,
+                is_loopback,
+                &mut buckets,
+            )
+        }) {
+            record_drop(&state, reason);
             continue;
         }
 
@@ -424,6 +467,90 @@ fn recv_loop(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DropReason {
+    Block,
+    Loss,
+    Rate,
+}
+
+fn record_drop(state: &EngineState, reason: DropReason) {
+    let counter = match reason {
+        DropReason::Block => &state.packets_blocked,
+        DropReason::Loss => &state.packets_loss_dropped,
+        DropReason::Rate => &state.packets_rate_dropped,
+    };
+    counter.fetch_add(1, Ordering::AcqRel);
+    state.packets_dropped.fetch_add(1, Ordering::AcqRel);
+}
+
+// SplitMix64 supplies a worker-local stream for simulation, not cryptography.
+// Fixed seeds make tests repeatable; production seeds differ between starts.
+struct LossSampler(u64);
+
+impl LossSampler {
+    fn should_drop(&mut self, basis_points: u16) -> bool {
+        if basis_points == 0 {
+            return false;
+        }
+        if basis_points >= 10_000 {
+            return true;
+        }
+        self.0 = self.0.wrapping_add(0x9e3779b97f4a7c15);
+        let mut value = self.0;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
+        value ^= value >> 31;
+        // Multiplication avoids a biased modulo reduction to 10,000 buckets.
+        u128::from(value) * 10_000 < (u128::from(basis_points) << 64)
+    }
+}
+
+fn process_blocks_packet(state: &EngineState, pid: Option<u32>, is_loopback: bool) -> bool {
+    !is_loopback
+        && pid.is_some_and(|pid| {
+            state
+                .rules
+                .read()
+                .expect("rules lock poisoned")
+                .get(&pid)
+                .is_some_and(|rule| rule.block_all)
+        })
+}
+
+fn should_drop_for_loss(
+    state: &EngineState,
+    pid: Option<u32>,
+    direction: Direction,
+    is_loopback: bool,
+    sampler: &mut LossSampler,
+) -> bool {
+    if is_loopback {
+        return false;
+    }
+    let process_loss = pid.and_then(|pid| {
+        state
+            .rules
+            .read()
+            .expect("rules lock poisoned")
+            .get(&pid)
+            .and_then(|rule| rule.loss_basis_points(direction))
+    });
+    let loss = process_loss.unwrap_or_else(|| {
+        state
+            .global_rule
+            .read()
+            .expect("global rule lock poisoned")
+            .loss_basis_points(direction)
+            .unwrap_or(0)
+    });
+    if loss == 0 {
+        return false;
+    }
+    state.packets_loss_eligible.fetch_add(1, Ordering::AcqRel);
+    sampler.should_drop(loss)
+}
+
 fn global_blocks_packet(state: &EngineState, is_loopback: bool) -> bool {
     !is_loopback
         && state
@@ -440,27 +567,25 @@ fn should_drop_global(
     is_loopback: bool,
     dl_bucket: &mut Option<(TokenBucket, Instant)>,
     ul_bucket: &mut Option<(TokenBucket, Instant)>,
-) -> bool {
+) -> Option<DropReason> {
     let rule = state
         .global_rule
         .read()
         .expect("global rule lock poisoned")
         .clone();
     if rule.block_all && !is_loopback {
-        return true;
+        return Some(DropReason::Block);
     }
     if packet_len == 0 {
-        return false;
+        return None;
     }
-    let Some(rate) = rule.effective_bps(direction) else {
-        return false;
-    };
+    let rate = rule.effective_bps(direction)?;
 
     let slot = match direction {
         Direction::Download => dl_bucket,
         Direction::Upload => ul_bucket,
     };
-    consume_bucket(slot, rate, packet_len)
+    consume_bucket(slot, rate, packet_len).then_some(DropReason::Rate)
 }
 
 fn should_drop_process(
@@ -470,33 +595,27 @@ fn should_drop_process(
     packet_len: usize,
     is_loopback: bool,
     buckets: &mut HashMap<(u32, Direction), (TokenBucket, Instant)>,
-) -> bool {
-    let Some(pid) = pid else {
-        return false;
-    };
+) -> Option<DropReason> {
+    let pid = pid?;
     let rule = state
         .rules
         .read()
         .expect("rules lock poisoned")
         .get(&pid)
         .cloned();
-    let Some(rule) = rule else {
-        return false;
-    };
+    let rule = rule?;
     if rule.block_all && !is_loopback {
-        return true;
+        return Some(DropReason::Block);
     }
     if packet_len == 0 {
-        return false;
+        return None;
     }
-    let Some(rate) = rule.effective_bps(direction) else {
-        return false;
-    };
+    let rate = rule.effective_bps(direction)?;
 
     let slot = buckets
         .entry((pid, direction))
         .or_insert_with(|| (TokenBucket::new(rate), Instant::now()));
-    consume_existing_bucket(slot, rate, packet_len)
+    consume_existing_bucket(slot, rate, packet_len).then_some(DropReason::Rate)
 }
 
 fn consume_bucket(slot: &mut Option<(TokenBucket, Instant)>, rate: f64, packet_len: usize) -> bool {
@@ -541,11 +660,141 @@ fn consume_existing_bucket(
 mod tests {
     use super::*;
 
+    #[test]
+    fn loss_sampler_extremes_replay_and_distribution() {
+        let mut sampler = LossSampler(42);
+        for _ in 0..1000 {
+            assert!(!sampler.should_drop(0));
+            assert!(sampler.should_drop(10_000));
+        }
+        let mut replay = LossSampler(42);
+        for _ in 0..1000 {
+            assert_eq!(sampler.should_drop(2500), replay.should_drop(2500));
+        }
+        let trials = 200_000;
+        for rate in [1, 1000, 5000, 9999] {
+            let mut sampler = LossSampler(7);
+            let dropped = (0..trials).filter(|_| sampler.should_drop(rate)).count();
+            let probability = f64::from(rate) / 10_000.0;
+            let expected = f64::from(trials) * probability;
+            let tolerance = 6.0 * (expected * (1.0 - probability)).sqrt() + 1.0;
+            assert!(
+                (dropped as f64 - expected).abs() <= tolerance,
+                "unexpected distribution at {rate}: {dropped}"
+            );
+        }
+    }
+
+    #[test]
+    fn loss_inheritance_zero_override_direction_and_loopback() {
+        let state = EngineState::default();
+        *state.global_rule.write().unwrap() = ProcessRule {
+            download_loss_basis_points: Some(10_000),
+            upload_loss_basis_points: Some(0),
+            ..ProcessRule::default()
+        };
+        state.rules.write().unwrap().insert(
+            42,
+            ProcessRule {
+                download_loss_basis_points: Some(0),
+                upload_loss_basis_points: Some(10_000),
+                ..ProcessRule::default()
+            },
+        );
+        let mut sampler = LossSampler(42);
+        assert!(should_drop_for_loss(
+            &state,
+            None,
+            Direction::Download,
+            false,
+            &mut sampler
+        ));
+        assert!(should_drop_for_loss(
+            &state,
+            Some(99),
+            Direction::Download,
+            false,
+            &mut sampler
+        ));
+        assert!(!should_drop_for_loss(
+            &state,
+            Some(42),
+            Direction::Download,
+            false,
+            &mut sampler
+        ));
+        assert!(!should_drop_for_loss(
+            &state,
+            None,
+            Direction::Upload,
+            false,
+            &mut sampler
+        ));
+        assert!(should_drop_for_loss(
+            &state,
+            Some(42),
+            Direction::Upload,
+            false,
+            &mut sampler
+        ));
+        assert!(!should_drop_for_loss(
+            &state,
+            Some(42),
+            Direction::Upload,
+            true,
+            &mut sampler
+        ));
+        assert_eq!(state.packets_loss_eligible.load(Ordering::Acquire), 3);
+        state
+            .rules
+            .write()
+            .unwrap()
+            .get_mut(&42)
+            .unwrap()
+            .download_loss_basis_points = None;
+        assert!(should_drop_for_loss(
+            &state,
+            Some(42),
+            Direction::Download,
+            false,
+            &mut sampler
+        ));
+    }
+
+    #[test]
+    fn drop_reasons_are_separate_and_restart_resets_counters() {
+        let engine = NetworkEngine::new("missing-driver-directory");
+        record_drop(&engine.state, DropReason::Block);
+        record_drop(&engine.state, DropReason::Loss);
+        record_drop(&engine.state, DropReason::Loss);
+        record_drop(&engine.state, DropReason::Rate);
+        engine
+            .state
+            .packets_loss_eligible
+            .store(5, Ordering::Release);
+        let snapshot = engine.snapshot_and_reset();
+        assert_eq!(snapshot.packets_dropped, 4);
+        assert_eq!(snapshot.packets_blocked, 1);
+        assert_eq!(snapshot.packets_loss_dropped, 2);
+        assert_eq!(snapshot.packets_rate_dropped, 1);
+        assert_eq!(snapshot.packets_loss_eligible, 5);
+        engine.reset_runtime_counters();
+        let snapshot = engine.snapshot_and_reset();
+        assert_eq!(snapshot.packets_dropped, 0);
+        assert_eq!(
+            snapshot.packets_blocked
+                + snapshot.packets_loss_dropped
+                + snapshot.packets_rate_dropped
+                + snapshot.packets_loss_eligible,
+            0
+        );
+    }
+
     // Run explicitly from an elevated terminal with a reachable external TCP
     // endpoint. Only this test process is blocked; other applications stay online.
     #[test]
     #[ignore = "requires administrator privileges and FLOWBRAKE_TEST_ENDPOINT=IP:port"]
-    fn live_process_block_prevents_connect_and_restores_on_stop() {
+    fn live_process_block_and_loss_restore_connectivity() {
         use std::net::{SocketAddr, TcpListener, TcpStream};
         assert!(
             crate::elevation::is_elevated(),
@@ -591,6 +840,34 @@ mod tests {
         assert!(connect().is_err());
         engine.stop();
         drop(connect().expect("stopping must remove socket protection"));
+        engine.apply(EngineCommand::UpdateRule(
+            std::process::id(),
+            ProcessRule {
+                download_loss_basis_points: Some(10_000),
+                upload_loss_basis_points: Some(10_000),
+                ..ProcessRule::default()
+            },
+        ));
+        engine.start().unwrap();
+        assert!(
+            engine.socket_block.lock().unwrap().active.is_none(),
+            "loss must not install Socket Block"
+        );
+        assert!(
+            connect().is_err(),
+            "100% loss must blackhole connection attempts"
+        );
+        assert!(engine.snapshot_and_reset().packets_loss_dropped > 0);
+        engine.apply(EngineCommand::UpdateRule(
+            std::process::id(),
+            ProcessRule {
+                download_loss_basis_points: Some(0),
+                upload_loss_basis_points: Some(0),
+                ..ProcessRule::default()
+            },
+        ));
+        drop(connect().expect("0% loss must restore connectivity"));
+        engine.stop();
     }
 
     #[test]
@@ -663,32 +940,41 @@ mod tests {
         ));
         assert!(global_blocks_packet(&engine.state, false));
         assert!(!global_blocks_packet(&engine.state, true));
-        assert!(!should_drop_global(
-            &engine.state,
-            Direction::Upload,
-            512,
-            true,
-            &mut None,
-            &mut None
-        ));
-        assert!(!should_drop_process(
-            &engine.state,
-            Some(42),
-            Direction::Upload,
-            512,
-            true,
-            &mut HashMap::new()
-        ));
+        assert!(
+            should_drop_global(
+                &engine.state,
+                Direction::Upload,
+                512,
+                true,
+                &mut None,
+                &mut None
+            )
+            .is_none()
+        );
+        assert!(
+            should_drop_process(
+                &engine.state,
+                Some(42),
+                Direction::Upload,
+                512,
+                true,
+                &mut HashMap::new()
+            )
+            .is_none()
+        );
         engine.apply(EngineCommand::ClearRules);
         assert!(!global_blocks_packet(&engine.state, false));
-        assert!(!should_drop_process(
-            &engine.state,
-            Some(42),
-            Direction::Upload,
-            512,
-            false,
-            &mut HashMap::new()
-        ));
+        assert!(
+            should_drop_process(
+                &engine.state,
+                Some(42),
+                Direction::Upload,
+                512,
+                false,
+                &mut HashMap::new()
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -718,17 +1004,14 @@ mod tests {
         *state.global_rule.write().unwrap() = blocked.clone();
         state.rules.write().unwrap().insert(42, blocked);
         for direction in [Direction::Upload, Direction::Download] {
-            assert!(should_drop_global(
-                &state, direction, 0, false, &mut None, &mut None
-            ));
-            assert!(should_drop_process(
-                &state,
-                Some(42),
-                direction,
-                0,
-                false,
-                &mut HashMap::new()
-            ));
+            assert_eq!(
+                should_drop_global(&state, direction, 0, false, &mut None, &mut None),
+                Some(DropReason::Block)
+            );
+            assert_eq!(
+                should_drop_process(&state, Some(42), direction, 0, false, &mut HashMap::new()),
+                Some(DropReason::Block)
+            );
         }
     }
 
@@ -745,17 +1028,13 @@ mod tests {
         *state.global_rule.write().unwrap() = limited.clone();
         state.rules.write().unwrap().insert(42, limited);
         for direction in [Direction::Upload, Direction::Download] {
-            assert!(!should_drop_global(
-                &state, direction, 0, false, &mut None, &mut None
-            ));
-            assert!(!should_drop_process(
-                &state,
-                Some(42),
-                direction,
-                0,
-                false,
-                &mut HashMap::new()
-            ));
+            assert!(
+                should_drop_global(&state, direction, 0, false, &mut None, &mut None).is_none()
+            );
+            assert!(
+                should_drop_process(&state, Some(42), direction, 0, false, &mut HashMap::new())
+                    .is_none()
+            );
         }
     }
 }

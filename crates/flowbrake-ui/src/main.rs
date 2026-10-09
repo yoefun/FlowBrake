@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use flowbrake_core::{
     Direction, GlobalRule, ProcessRow as CoreProcessRow, ProcessRule, RollingAverage, RowKind,
     SortColumn, SortDirection, SpeedUnit, TcpConnection, TcpConnectionKey, build_process_rows,
-    compute_adaptive_rate, format_limit_kibps, format_limit_summary, format_speed,
-    parse_limit_input,
+    compute_adaptive_rate, format_limit_kibps, format_limit_summary, format_loss_percent,
+    format_speed, parse_limit_input, parse_loss_percent,
 };
 use flowbrake_windows::{
     EngineCommand, NetworkEngine, ProcessMetadataCache, RelaunchResult, close_tcp_connection,
@@ -55,6 +55,9 @@ struct AppState {
     tray: Option<TrayController>,
     suppress_table_refresh_until: Option<Instant>,
     limit_editing: bool,
+    loss_selection: Option<RowSelection>,
+    loss_download_draft: Option<(String, String)>,
+    loss_upload_draft: Option<(String, String)>,
     selected: Option<RowSelection>,
     speed_unit: SpeedUnit,
     ipv6_enabled: bool,
@@ -111,6 +114,9 @@ impl AppState {
             tray: TrayController::new().ok(),
             suppress_table_refresh_until: None,
             limit_editing: false,
+            loss_selection: None,
+            loss_download_draft: None,
+            loss_upload_draft: None,
             selected: None,
             speed_unit: SpeedUnit::from_bits_mode(settings.speed_unit_bits),
             ipv6_enabled: settings.ipv6_enabled,
@@ -201,16 +207,7 @@ impl AppState {
     }
 
     fn apply_name_rules_from(&mut self, processes: &[flowbrake_core::ProcessInfo]) {
-        let mut added = Vec::new();
-        for process in processes {
-            let key = process.name.to_lowercase();
-            let Some(rule) = self.name_rules.get(&key).cloned() else {
-                continue;
-            };
-            if self.rules.insert(process.pid, rule.clone()).is_none() {
-                added.push((process.pid, rule));
-            }
-        }
+        let added = inherit_name_rules(&mut self.rules, &self.name_rules, processes);
 
         if self.engine.is_running() {
             for (pid, rule) in added {
@@ -431,6 +428,35 @@ impl AppState {
         }
     }
 
+    fn edit_selected_loss(&mut self, direction: &str, text: &str) -> bool {
+        let Some(row) = self.selected_row().cloned() else {
+            return false;
+        };
+        let draft = match direction {
+            "dl" => &mut self.loss_download_draft,
+            "ul" => &mut self.loss_upload_draft,
+            _ => return false,
+        };
+        let value = match parse_loss_percent(text) {
+            Ok(value) => {
+                *draft = None;
+                value
+            }
+            Err(error) => {
+                *draft = Some((text.to_string(), error.to_string()));
+                return false;
+            }
+        };
+        let mut rule = row.rule;
+        match direction {
+            "dl" => rule.download_loss_basis_points = value,
+            "ul" => rule.upload_loss_basis_points = value,
+            _ => unreachable!(),
+        }
+        self.apply_rule_to_row(&row.kind, rule);
+        true
+    }
+
     fn tick(&mut self) -> TickStatus {
         let snapshot = self.engine.snapshot_and_reset();
         let seen_pids: HashSet<u32> = snapshot.per_pid.keys().copied().collect();
@@ -488,11 +514,19 @@ impl AppState {
                 format!("Block protection degraded: {error}")
             } else if snapshot.running {
                 format!(
-                    "Interceptor running   v {}   ^ {}   |   Packets: {}   Dropped: {}",
+                    "Interceptor running   v {}   ^ {}   |   Packets: {}   Block: {}   Loss: {} ({:.2}%)   Limit: {}",
                     format_speed(self.global_dl_bps, self.speed_unit),
                     format_speed(self.global_ul_bps, self.speed_unit),
                     snapshot.packets_processed,
-                    snapshot.packets_dropped
+                    snapshot.packets_blocked,
+                    snapshot.packets_loss_dropped,
+                    if snapshot.packets_loss_eligible == 0 {
+                        0.0
+                    } else {
+                        snapshot.packets_loss_dropped as f64 * 100.0
+                            / snapshot.packets_loss_eligible as f64
+                    },
+                    snapshot.packets_rate_dropped
                 )
             } else {
                 "Interceptor stopped".to_string()
@@ -683,6 +717,24 @@ impl From<&RowKind> for RowSelection {
             RowKind::Child { pid, .. } => Self::Child(*pid),
         }
     }
+}
+
+fn inherit_name_rules(
+    rules: &mut HashMap<u32, ProcessRule>,
+    name_rules: &HashMap<String, ProcessRule>,
+    processes: &[flowbrake_core::ProcessInfo],
+) -> Vec<(u32, ProcessRule)> {
+    let mut added = Vec::new();
+    for process in processes {
+        let Some(rule) = name_rules.get(&process.name.to_lowercase()) else {
+            continue;
+        };
+        if let std::collections::hash_map::Entry::Vacant(entry) = rules.entry(process.pid) {
+            entry.insert(rule.clone());
+            added.push((process.pid, rule.clone()));
+        }
+    }
+    added
 }
 
 fn runtime_rule(rule: &ProcessRule) -> ProcessRule {
@@ -952,6 +1004,23 @@ fn main() -> Result<(), slint::PlatformError> {
                 .edit_selected_limit(direction.as_str(), value.as_str());
             update_selected_sidebar(&app, &state);
             persist_settings(&app, &state);
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let state = Rc::clone(&state);
+        app.on_selected_loss_submitted(move |direction, value| {
+            let app = app_weak.unwrap();
+            let applied = state
+                .borrow_mut()
+                .edit_selected_loss(direction.as_str(), value.as_str());
+            if applied {
+                render_rows(&app, &state);
+                persist_settings(&app, &state);
+            } else {
+                update_selected_sidebar(&app, &state);
+            }
         });
     }
 
@@ -1316,7 +1385,13 @@ fn update_summary_panel(app: &AppWindow, state: &AppState) {
 }
 
 fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
-    let state = state_rc.borrow();
+    let mut state = state_rc.borrow_mut();
+    let selection_changed = state.loss_selection != state.selected;
+    if selection_changed {
+        state.loss_selection = state.selected.clone();
+        state.loss_download_draft = None;
+        state.loss_upload_draft = None;
+    }
     let Some(row) = state.selected_row() else {
         drop(state);
         app.set_sidebar_open(false);
@@ -1330,6 +1405,11 @@ fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
         app.set_selected_dl_limit("".into());
         app.set_selected_limit_ul(false);
         app.set_selected_ul_limit("".into());
+        app.set_selected_dl_loss("".into());
+        app.set_selected_ul_loss("".into());
+        app.set_selected_dl_loss_error("".into());
+        app.set_selected_ul_loss_error("".into());
+        app.set_selected_loss_hint("".into());
         app.set_selected_block(false);
         app.set_selected_adaptive(false);
         clear_connections_sidebar(app);
@@ -1382,6 +1462,49 @@ fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
     app.set_selected_dl_limit(limit_text(row.rule.download_kbps, state.speed_unit));
     app.set_selected_limit_ul(row.rule.limit_upload);
     app.set_selected_ul_limit(limit_text(row.rule.upload_kbps, state.speed_unit));
+    if !state.limit_editing || selection_changed {
+        let (download, download_error) = state.loss_download_draft.clone().unwrap_or_else(|| {
+            (
+                format_loss_percent(row.rule.download_loss_basis_points),
+                String::new(),
+            )
+        });
+        let (upload, upload_error) = state.loss_upload_draft.clone().unwrap_or_else(|| {
+            (
+                format_loss_percent(row.rule.upload_loss_basis_points),
+                String::new(),
+            )
+        });
+        app.set_selected_dl_loss(download.into());
+        app.set_selected_ul_loss(upload.into());
+        app.set_selected_dl_loss_error(download_error.into());
+        app.set_selected_ul_loss_error(upload_error.into());
+    } else {
+        app.set_selected_dl_loss_error(
+            state
+                .loss_download_draft
+                .as_ref()
+                .map(|(_, error)| error.as_str())
+                .unwrap_or("")
+                .into(),
+        );
+        app.set_selected_ul_loss_error(
+            state
+                .loss_upload_draft
+                .as_ref()
+                .map(|(_, error)| error.as_str())
+                .unwrap_or("")
+                .into(),
+        );
+    }
+    app.set_selected_loss_hint(
+        if show_connections {
+            "Blank: use global; 0: off"
+        } else {
+            "Blank or 0: off"
+        }
+        .into(),
+    );
     app.set_selected_block(row.rule.block_all);
     app.set_selected_adaptive(row.rule.adaptive);
 
@@ -1632,6 +1755,46 @@ fn limit_summary_text(enabled: bool, kibps: u32, unit: SpeedUnit) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn name_rule_refresh_preserves_child_loss_override_and_inherits_for_new_pid() {
+        let group_rule = ProcessRule {
+            download_loss_basis_points: Some(2500),
+            upload_loss_basis_points: Some(1000),
+            ..Default::default()
+        };
+        let child_rule = ProcessRule {
+            download_loss_basis_points: Some(0),
+            upload_loss_basis_points: Some(500),
+            ..Default::default()
+        };
+        let name_rules = HashMap::from([("example.exe".to_string(), group_rule.clone())]);
+        let mut rules = HashMap::from([(10, child_rule.clone())]);
+        let processes = [
+            flowbrake_core::ProcessInfo::new(10, "Example.exe"),
+            flowbrake_core::ProcessInfo::new(20, "Example.exe"),
+        ];
+
+        let added = inherit_name_rules(&mut rules, &name_rules, &processes);
+        assert_eq!(rules.get(&10), Some(&child_rule));
+        assert_eq!(rules.get(&20), Some(&group_rule));
+        assert_eq!(added, vec![(20, group_rule)]);
+        assert!(inherit_name_rules(&mut rules, &name_rules, &processes).is_empty());
+        assert_eq!(rules.get(&10), Some(&child_rule));
+    }
+
+    #[test]
+    fn runtime_rule_retains_loss_overrides_without_speed_limits() {
+        let rule = ProcessRule {
+            download_loss_basis_points: Some(0),
+            upload_loss_basis_points: Some(125),
+            ..Default::default()
+        };
+        let runtime = runtime_rule(&rule);
+        assert_eq!(runtime.download_loss_basis_points, Some(0));
+        assert_eq!(runtime.upload_loss_basis_points, Some(125));
+        assert!(runtime.has_any_rule());
+    }
 
     #[test]
     fn runtime_rule_ignores_draft_limit_values_until_checkbox_is_enabled() {

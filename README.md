@@ -169,6 +169,41 @@ $env:FLOWBRAKE_TEST_ENDPOINT = "<external-IP>:<port>"
 cargo test -p flowbrake-windows live_process_block -- --ignored --nocapture
 ```
 
+## Packet Loss Simulation
+
+Select the computer, a process group, or an individual PID and open its Details
+sidebar. Set **Download loss %** and **Upload loss %** independently between 0
+and 100, with up to two decimal places. Changes apply when you press Enter or
+leave the input. Invalid input displays an error and leaves the active rule unchanged.
+
+- A blank process value inherits the global value for that direction.
+- An explicit `0` disables simulated loss for that process, even when global loss is enabled.
+- A blank or `0` global value disables global simulation.
+- Process values replace global values; they are not sampled twice.
+- Simulation covers parsed external TCP/UDP packets, including empty TCP control
+  packets and retransmissions, for both IPv4 and IPv6. Loopback is preserved.
+- `100` creates a packet blackhole; it does not install Socket Block filters.
+  Connection attempts can remain pending until timeout.
+
+The order is Block, simulated loss, then speed limiting. Simulated drops do not
+consume token-bucket budget. The status bar separates packet drops caused by
+Block, Loss, and Limit. The displayed loss percentage is the cumulative ratio of
+simulated drops to packets sampled by active nonzero loss rules since the engine
+started. Only simulated drops enter the numerator; sampled packets later dropped
+by speed limiting remain in the denominator. Blocked packets, loopback, and
+explicit 0% overrides are not sampled.
+Random loss converges toward the configured percentage over many packets, so
+short runs may differ. Combining loss with a speed limit can increase total drops.
+
+Per-process simulation shares the endpoint-to-PID attribution limitations of
+per-process blocking. Unattributed packets use the global loss setting. Packets
+the TCP/UDP parser does not support pass without simulated loss. IPv6 simulation
+is independent of the IPv6 statistics/limiting setting. Adaptive limiting uses
+post-loss throughput; disable Adaptive when testing loss alone.
+
+Global and executable-name group loss rules are saved with existing settings.
+Individual PID overrides last for the current session, like PID speed limits.
+
 ## Settings and Persistence
 
 FlowBrake stores settings in:
@@ -185,6 +220,7 @@ The file is a simple `key=value` format and persists:
 - Expanded process groups
 - Global limit, block, and adaptive settings
 - Per-process rules keyed by executable name
+- Download/upload simulated packet-loss overrides, including explicit 0% values
 
 Rules are restored when matching processes appear again. Settings are saved when
 the window is closed, minimized to tray, or when relevant preferences change.
