@@ -484,7 +484,9 @@ impl AppState {
 
         TickStatus {
             running: snapshot.running,
-            text: if snapshot.running {
+            text: if let Some(error) = snapshot.block_error {
+                format!("Block protection degraded: {error}")
+            } else if snapshot.running {
                 format!(
                     "Interceptor running   v {}   ^ {}   |   Packets: {}   Dropped: {}",
                     format_speed(self.global_dl_bps, self.speed_unit),

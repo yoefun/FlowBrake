@@ -133,7 +133,7 @@ Use the UI as follows:
 1. The interceptor starts automatically after administrator approval.
 2. Enter a speed value for a process or the global row.
 3. Enable the corresponding download or upload checkbox to apply the limit.
-4. Use `Block` to drop all matching traffic for a row.
+4. Use `Block` to prevent new external connections and drop matching external traffic for a row.
 5. Use `Adaptive` to make the limiter adjust toward the displayed target.
 6. Click a row to open the detail sidebar and edit limits or inspect connections.
 7. Double-click a grouped row to expand or collapse its per-PID children.
@@ -143,6 +143,31 @@ Use the UI as follows:
 
 Typing a limit value alone stores it as a draft. A limit only becomes active
 when its checkbox is enabled.
+
+`Block` combines socket-level blocking of new connection/accept operations with
+packet-level blocking of existing traffic, including empty TCP control packets.
+Global Block drops external IPv4/IPv6 packets before parsing, including ICMP,
+regardless of the IPv6 statistics/limiting setting. Local loopback traffic is
+preserved. This does not disable adapters or change Windows' link status; existing
+TCP connections may remain listed until they time out.
+
+Per-process packet blocking uses the endpoint-to-PID table, refreshing it when
+Block changes or an unknown port is encountered. Socket blocking avoids that
+table's polling delay for new connections from already selected PIDs. Processes
+newly joining a saved executable-name group are covered once the UI discovers
+them. Existing traffic that cannot be parsed or attributed to a PID remains a
+limitation of per-process packet blocking. A socket-filter installation failure
+is reported as `Block protection degraded` in the status bar.
+
+To verify driver-level TCP blocking, run this opt-in test from an administrator
+PowerShell terminal. Set the endpoint to a reachable external IPv4 or IPv6 TCP
+server. The test blocks only its own PID, checks loopback and connectivity
+restoration, and removes its filters on exit:
+
+```powershell
+$env:FLOWBRAKE_TEST_ENDPOINT = "<external-IP>:<port>"
+cargo test -p flowbrake-windows live_process_block -- --ignored --nocapture
+```
 
 ## Settings and Persistence
 

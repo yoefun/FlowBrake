@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -13,9 +13,9 @@ use crate::ip_helper::PortPidMap;
 use crate::packet::IpPacket;
 use crate::windivert::{WinDivert, WinDivertError};
 
-const FILTER_V4_ONLY: &str = "ip and (tcp or udp)";
-const FILTER_V4_V6: &str = "(ip or ipv6) and (tcp or udp)";
-const BUF_SIZE: usize = 65_535;
+// Block covers both IP families even when IPv6 statistics/limiting are disabled.
+const NETWORK_FILTER: &str = "ip or ipv6";
+const BUF_SIZE: usize = 40 + 65_535;
 const PORT_MAP_REFRESH: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Error)]
@@ -42,6 +42,7 @@ pub struct EngineSnapshot {
     pub packets_processed: u64,
     pub packets_dropped: u64,
     pub running: bool,
+    pub block_error: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -59,6 +60,13 @@ struct EngineState {
     global_upload: AtomicU64,
     packets_processed: AtomicU64,
     packets_dropped: AtomicU64,
+    block_revision: AtomicU64,
+}
+
+#[derive(Default)]
+struct SocketBlock {
+    active: Option<(String, WinDivert)>,
+    error: Option<String>,
 }
 
 pub struct NetworkEngine {
@@ -68,6 +76,7 @@ pub struct NetworkEngine {
     ipv6_enabled: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     active_divert: Option<WinDivert>,
+    socket_block: Mutex<SocketBlock>,
 }
 
 impl NetworkEngine {
@@ -79,6 +88,7 @@ impl NetworkEngine {
             ipv6_enabled: Arc::new(AtomicBool::new(true)),
             worker: None,
             active_divert: None,
+            socket_block: Mutex::new(SocketBlock::default()),
         }
     }
 
@@ -105,12 +115,8 @@ impl NetworkEngine {
             return Err(EngineError::AlreadyRunning);
         }
 
-        let filter = if self.ipv6_enabled() {
-            FILTER_V4_V6
-        } else {
-            FILTER_V4_ONLY
-        };
-        let divert = WinDivert::open_from_dir(&self.exe_dir, filter)?;
+        let divert = WinDivert::open_from_dir(&self.exe_dir, NETWORK_FILTER)?;
+        self.sync_socket_block()?;
         self.stopping.store(false, Ordering::Release);
         self.reset_runtime_counters();
 
@@ -137,6 +143,10 @@ impl NetworkEngine {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+        *self
+            .socket_block
+            .lock()
+            .expect("socket block lock poisoned") = SocketBlock::default();
     }
 
     pub fn apply(&self, command: EngineCommand) {
@@ -148,13 +158,18 @@ impl NetworkEngine {
                 }
             }
             EngineCommand::SetGlobalRule(rule) => {
-                *self
+                let mut current = self
                     .state
                     .global_rule
                     .write()
-                    .expect("global rule lock poisoned") = rule;
+                    .expect("global rule lock poisoned");
+                if current.block_all != rule.block_all {
+                    self.state.block_revision.fetch_add(1, Ordering::AcqRel);
+                }
+                *current = rule;
             }
             EngineCommand::ClearRules => {
+                self.state.block_revision.fetch_add(1, Ordering::AcqRel);
                 self.state
                     .rules
                     .write()
@@ -165,6 +180,54 @@ impl NetworkEngine {
                     .global_rule
                     .write()
                     .expect("global rule lock poisoned") = GlobalRule::default();
+            }
+        }
+        if self.is_running() {
+            // Packet blocking remains active; the UI reports socket-filter failures.
+            let _ = self.sync_socket_block();
+        } else {
+            *self
+                .socket_block
+                .lock()
+                .expect("socket block lock poisoned") = SocketBlock::default();
+        }
+    }
+
+    fn sync_socket_block(&self) -> Result<(), EngineError> {
+        let filter = socket_block_filter(
+            &self
+                .state
+                .global_rule
+                .read()
+                .expect("global rule lock poisoned"),
+            &self.state.rules.read().expect("rules lock poisoned"),
+        );
+        let mut block = self
+            .socket_block
+            .lock()
+            .expect("socket block lock poisoned");
+        let Some(filter) = filter else {
+            *block = SocketBlock::default();
+            return Ok(());
+        };
+        if block
+            .active
+            .as_ref()
+            .is_some_and(|(current, _)| current == &filter)
+        {
+            return Ok(());
+        }
+        match WinDivert::open_socket_block_from_dir(&self.exe_dir, &filter) {
+            Ok(handle) => {
+                // Replace only after installation to avoid an unblock window.
+                block.active = Some((filter, handle));
+                block.error = None;
+                Ok(())
+            }
+            Err(error) => {
+                block.active = None;
+                block.error = Some(error.to_string());
+                Err(error.into())
             }
         }
     }
@@ -180,6 +243,19 @@ impl NetworkEngine {
     }
 
     pub fn snapshot_and_reset(&self) -> EngineSnapshot {
+        let running = self.is_running();
+        let block_error = {
+            let mut block = self
+                .socket_block
+                .lock()
+                .expect("socket block lock poisoned");
+            if !running {
+                // An unexpected packet-worker exit must not leave invisible
+                // connection filters active while the UI reports "stopped".
+                block.active = None;
+            }
+            block.error.clone()
+        };
         let mut per_pid = HashMap::new();
         for (pid, counters) in self
             .state
@@ -199,12 +275,16 @@ impl NetworkEngine {
             global_upload_bytes: self.state.global_upload.swap(0, Ordering::AcqRel),
             packets_processed: self.state.packets_processed.load(Ordering::Acquire),
             packets_dropped: self.state.packets_dropped.load(Ordering::Acquire),
-            running: self.is_running(),
+            running,
+            block_error,
         }
     }
 
     fn update_rule(&self, pid: u32, rule: ProcessRule) {
         let mut rules = self.state.rules.write().expect("rules lock poisoned");
+        if rules.get(&pid).is_some_and(|current| current.block_all) != rule.block_all {
+            self.state.block_revision.fetch_add(1, Ordering::AcqRel);
+        }
         if rule.has_any_rule() {
             rules.insert(pid, rule);
         } else {
@@ -238,8 +318,10 @@ fn recv_loop(
     ipv6_enabled: Arc<AtomicBool>,
 ) {
     let mut packet_buffer = vec![0u8; BUF_SIZE];
-    let mut port_pid = PortPidMap::refresh(ipv6_enabled.load(Ordering::Acquire));
+    let mut port_pid = PortPidMap::refresh(true);
     let mut last_map_refresh = Instant::now();
+    let mut block_revision = state.block_revision.load(Ordering::Acquire);
+    let mut unresolved_ports = HashSet::new();
     let mut buckets: HashMap<(u32, Direction), (TokenBucket, Instant)> = HashMap::new();
     let mut global_dl_bucket: Option<(TokenBucket, Instant)> = None;
     let mut global_ul_bucket: Option<(TokenBucket, Instant)> = None;
@@ -251,12 +333,22 @@ fn recv_loop(
 
         state.packets_processed.fetch_add(1, Ordering::AcqRel);
 
-        if last_map_refresh.elapsed() >= PORT_MAP_REFRESH {
-            port_pid = PortPidMap::refresh(ipv6_enabled.load(Ordering::Acquire));
+        let current_revision = state.block_revision.load(Ordering::Acquire);
+        if last_map_refresh.elapsed() >= PORT_MAP_REFRESH || current_revision != block_revision {
+            port_pid = PortPidMap::refresh(true);
             last_map_refresh = Instant::now();
+            block_revision = current_revision;
+            unresolved_ports.clear();
         }
 
         let is_ipv6 = address.is_ipv6();
+        let is_loopback = address.is_loopback();
+        // Global Block precedes parsing so ICMP, fragments and unsupported
+        // transport headers cannot bypass it.
+        if global_blocks_packet(&state, is_loopback) {
+            state.packets_dropped.fetch_add(1, Ordering::AcqRel);
+            continue;
+        }
         let direction = if address.is_outbound() {
             Direction::Upload
         } else {
@@ -267,17 +359,43 @@ fn recv_loop(
             continue;
         };
 
-        let pid = port_pid.pid_for(packet.protocol, packet.local_port(direction), is_ipv6);
-        let charge_len = packet.payload_len;
+        let local_port = packet.local_port(direction);
+        let mut pid = port_pid.pid_for(packet.protocol, local_port, is_ipv6);
+        if pid.is_none()
+            && state
+                .rules
+                .read()
+                .expect("rules lock poisoned")
+                .values()
+                .any(|rule| rule.block_all)
+            && unresolved_ports.insert((packet.protocol, local_port, is_ipv6))
+        {
+            // Resolve newly created endpoints immediately, rather than waiting
+            // for the periodic table refresh. Cache misses to bound table queries.
+            port_pid = PortPidMap::refresh(true);
+            pid = port_pid.pid_for(packet.protocol, local_port, is_ipv6);
+        }
+        let charge_len = if is_ipv6 && !ipv6_enabled.load(Ordering::Acquire) {
+            0
+        } else {
+            packet.payload_len
+        };
 
         if should_drop_global(
             &state,
             direction,
             charge_len,
+            is_loopback,
             &mut global_dl_bucket,
             &mut global_ul_bucket,
-        ) || should_drop_process(&state, pid, direction, charge_len, &mut buckets)
-        {
+        ) || should_drop_process(
+            &state,
+            pid,
+            direction,
+            charge_len,
+            is_loopback,
+            &mut buckets,
+        ) {
             state.packets_dropped.fetch_add(1, Ordering::AcqRel);
             continue;
         }
@@ -306,23 +424,33 @@ fn recv_loop(
     }
 }
 
+fn global_blocks_packet(state: &EngineState, is_loopback: bool) -> bool {
+    !is_loopback
+        && state
+            .global_rule
+            .read()
+            .expect("global rule lock poisoned")
+            .block_all
+}
+
 fn should_drop_global(
     state: &EngineState,
     direction: Direction,
     packet_len: usize,
+    is_loopback: bool,
     dl_bucket: &mut Option<(TokenBucket, Instant)>,
     ul_bucket: &mut Option<(TokenBucket, Instant)>,
 ) -> bool {
-    if packet_len == 0 {
-        return false;
-    }
     let rule = state
         .global_rule
         .read()
         .expect("global rule lock poisoned")
         .clone();
-    if rule.block_all {
+    if rule.block_all && !is_loopback {
         return true;
+    }
+    if packet_len == 0 {
+        return false;
     }
     let Some(rate) = rule.effective_bps(direction) else {
         return false;
@@ -340,11 +468,9 @@ fn should_drop_process(
     pid: Option<u32>,
     direction: Direction,
     packet_len: usize,
+    is_loopback: bool,
     buckets: &mut HashMap<(u32, Direction), (TokenBucket, Instant)>,
 ) -> bool {
-    if packet_len == 0 {
-        return false;
-    }
     let Some(pid) = pid else {
         return false;
     };
@@ -357,8 +483,11 @@ fn should_drop_process(
     let Some(rule) = rule else {
         return false;
     };
-    if rule.block_all {
+    if rule.block_all && !is_loopback {
         return true;
+    }
+    if packet_len == 0 {
+        return false;
     }
     let Some(rate) = rule.effective_bps(direction) else {
         return false;
@@ -375,6 +504,27 @@ fn consume_bucket(slot: &mut Option<(TokenBucket, Instant)>, rate: f64, packet_l
     consume_existing_bucket(slot, rate, packet_len)
 }
 
+fn socket_block_filter(global: &GlobalRule, rules: &HashMap<u32, ProcessRule>) -> Option<String> {
+    let events = "!loopback and (event == CONNECT or event == ACCEPT)";
+    if global.block_all {
+        return Some(events.to_string());
+    }
+    let mut pids: Vec<_> = rules
+        .iter()
+        .filter_map(|(pid, rule)| rule.block_all.then_some(*pid))
+        .collect();
+    pids.sort_unstable();
+    if pids.is_empty() {
+        return None;
+    }
+    let processes = pids
+        .iter()
+        .map(|pid| format!("processId == {pid}"))
+        .collect::<Vec<_>>()
+        .join(" or ");
+    Some(format!("{events} and ({processes})"))
+}
+
 fn consume_existing_bucket(
     slot: &mut (TokenBucket, Instant),
     rate: f64,
@@ -385,4 +535,227 @@ fn consume_existing_bucket(
     slot.1 = now;
     slot.0.set_rate(rate);
     !slot.0.try_consume(packet_len, elapsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Run explicitly from an elevated terminal with a reachable external TCP
+    // endpoint. Only this test process is blocked; other applications stay online.
+    #[test]
+    #[ignore = "requires administrator privileges and FLOWBRAKE_TEST_ENDPOINT=IP:port"]
+    fn live_process_block_prevents_connect_and_restores_on_stop() {
+        use std::net::{SocketAddr, TcpListener, TcpStream};
+        assert!(
+            crate::elevation::is_elevated(),
+            "run this test as Administrator"
+        );
+        let endpoint: SocketAddr = std::env::var("FLOWBRAKE_TEST_ENDPOINT")
+            .expect("set a reachable external IP:port")
+            .parse()
+            .unwrap();
+        let timeout = Duration::from_secs(3);
+        let connect = || TcpStream::connect_timeout(&endpoint, timeout);
+        drop(connect().expect("endpoint must be reachable before the test"));
+        let loopback = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut engine = NetworkEngine::new(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../third_party/windivert"),
+        );
+        engine.start().unwrap();
+        engine.apply(EngineCommand::UpdateRule(
+            std::process::id(),
+            ProcessRule {
+                block_all: true,
+                ..ProcessRule::default()
+            },
+        ));
+        assert!(engine.snapshot_and_reset().block_error.is_none());
+        assert!(
+            connect().is_err(),
+            "Block must prevent a new external TCP connection"
+        );
+        drop(
+            TcpStream::connect_timeout(&loopback.local_addr().unwrap(), timeout)
+                .expect("Block must preserve loopback"),
+        );
+        engine.apply(EngineCommand::ClearRules);
+        drop(connect().expect("clearing Block must restore connectivity"));
+        engine.apply(EngineCommand::UpdateRule(
+            std::process::id(),
+            ProcessRule {
+                block_all: true,
+                ..ProcessRule::default()
+            },
+        ));
+        assert!(connect().is_err());
+        engine.stop();
+        drop(connect().expect("stopping must remove socket protection"));
+    }
+
+    #[test]
+    fn socket_filters_compile_with_bundled_windivert() {
+        type CompileFilter = unsafe extern "C" fn(
+            *const std::ffi::c_char,
+            i32,
+            *mut std::ffi::c_char,
+            u32,
+            *mut *const std::ffi::c_char,
+            *mut u32,
+        ) -> i32;
+        let library = unsafe {
+            libloading::Library::new(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../third_party/windivert/WinDivert.dll"),
+            )
+            .unwrap()
+        };
+        let compile: libloading::Symbol<CompileFilter> =
+            unsafe { library.get(b"WinDivertHelperCompileFilter").unwrap() };
+        let blocked = ProcessRule {
+            block_all: true,
+            ..ProcessRule::default()
+        };
+        let rules = HashMap::from([
+            (42, blocked.clone()),
+            (99, blocked.clone()),
+            (7, ProcessRule::default()),
+        ]);
+        let process_filter = socket_block_filter(&GlobalRule::default(), &rules).unwrap();
+        assert!(process_filter.contains("processId == 42 or processId == 99"));
+        assert!(!process_filter.contains("processId == 7"));
+        for (filter, layer) in [
+            (process_filter, 3),
+            (socket_block_filter(&blocked, &rules).unwrap(), 3),
+            (NETWORK_FILTER.to_string(), 0),
+        ] {
+            let filter = std::ffi::CString::new(filter).unwrap();
+            let mut error = std::ptr::null();
+            let mut position = 0;
+            let ok = unsafe {
+                compile(
+                    filter.as_ptr(),
+                    layer,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut error,
+                    &mut position,
+                )
+            };
+            assert_ne!(ok, 0, "invalid filter {filter:?} at {position}");
+        }
+        assert!(socket_block_filter(&GlobalRule::default(), &HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn block_preserves_loopback_and_ends_when_rule_is_cleared() {
+        let engine = NetworkEngine::new("missing-driver-directory");
+        engine.apply(EngineCommand::SetGlobalRule(ProcessRule {
+            block_all: true,
+            ..ProcessRule::default()
+        }));
+        engine.apply(EngineCommand::UpdateRule(
+            42,
+            ProcessRule {
+                block_all: true,
+                ..ProcessRule::default()
+            },
+        ));
+        assert!(global_blocks_packet(&engine.state, false));
+        assert!(!global_blocks_packet(&engine.state, true));
+        assert!(!should_drop_global(
+            &engine.state,
+            Direction::Upload,
+            512,
+            true,
+            &mut None,
+            &mut None
+        ));
+        assert!(!should_drop_process(
+            &engine.state,
+            Some(42),
+            Direction::Upload,
+            512,
+            true,
+            &mut HashMap::new()
+        ));
+        engine.apply(EngineCommand::ClearRules);
+        assert!(!global_blocks_packet(&engine.state, false));
+        assert!(!should_drop_process(
+            &engine.state,
+            Some(42),
+            Direction::Upload,
+            512,
+            false,
+            &mut HashMap::new()
+        ));
+    }
+
+    #[test]
+    fn socket_filter_failure_is_reported_and_stop_clears_it() {
+        let mut engine = NetworkEngine::new("missing-driver-directory");
+        engine.apply(EngineCommand::UpdateRule(
+            42,
+            ProcessRule {
+                block_all: true,
+                ..ProcessRule::default()
+            },
+        ));
+        assert!(engine.sync_socket_block().is_err());
+        assert!(engine.snapshot_and_reset().block_error.is_some());
+        engine.stop();
+        assert!(engine.snapshot_and_reset().block_error.is_none());
+        assert!(engine.socket_block.lock().unwrap().active.is_none());
+    }
+
+    #[test]
+    fn block_drops_empty_tcp_control_packets_in_both_directions() {
+        let state = EngineState::default();
+        let blocked = ProcessRule {
+            block_all: true,
+            ..ProcessRule::default()
+        };
+        *state.global_rule.write().unwrap() = blocked.clone();
+        state.rules.write().unwrap().insert(42, blocked);
+        for direction in [Direction::Upload, Direction::Download] {
+            assert!(should_drop_global(
+                &state, direction, 0, false, &mut None, &mut None
+            ));
+            assert!(should_drop_process(
+                &state,
+                Some(42),
+                direction,
+                0,
+                false,
+                &mut HashMap::new()
+            ));
+        }
+    }
+
+    #[test]
+    fn limiting_keeps_empty_tcp_control_packets_unthrottled() {
+        let state = EngineState::default();
+        let limited = ProcessRule {
+            limit_download: true,
+            download_kbps: 1,
+            limit_upload: true,
+            upload_kbps: 1,
+            ..ProcessRule::default()
+        };
+        *state.global_rule.write().unwrap() = limited.clone();
+        state.rules.write().unwrap().insert(42, limited);
+        for direction in [Direction::Upload, Direction::Download] {
+            assert!(!should_drop_global(
+                &state, direction, 0, false, &mut None, &mut None
+            ));
+            assert!(!should_drop_process(
+                &state,
+                Some(42),
+                direction,
+                0,
+                false,
+                &mut HashMap::new()
+            ));
+        }
+    }
 }

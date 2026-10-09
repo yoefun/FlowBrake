@@ -8,6 +8,10 @@ use libloading::Library;
 use thiserror::Error;
 
 const WINDIVERT_LAYER_NETWORK: i32 = 0;
+const WINDIVERT_LAYER_SOCKET: i32 = 3;
+const WINDIVERT_FLAG_DROP: u64 = 0x0002;
+const WINDIVERT_FLAG_RECV_ONLY: u64 = 0x0004;
+const WINDIVERT_FLAG_LOOPBACK: u32 = 0x0004_0000;
 const WINDIVERT_FLAG_IPV6: u32 = 0x0010_0000;
 const WINDIVERT_FLAG_OUTBOUND: u32 = 0x0002_0000;
 
@@ -34,6 +38,8 @@ pub enum WinDivertError {
     DriverNotFound,
     #[error("WinDivert failed to open (error {0}).")]
     OpenFailed(i32),
+    #[error("WinDivert filter contains a NUL byte.")]
+    InvalidFilter,
 }
 
 #[repr(C)]
@@ -61,6 +67,9 @@ impl Default for WinDivertAddress {
 }
 
 impl WinDivertAddress {
+    pub fn is_loopback(self) -> bool {
+        (self.flags & WINDIVERT_FLAG_LOOPBACK) != 0
+    }
     pub fn is_outbound(self) -> bool {
         (self.flags & WINDIVERT_FLAG_OUTBOUND) != 0
     }
@@ -85,7 +94,22 @@ unsafe impl Sync for WinDivert {}
 
 impl WinDivert {
     pub fn open_from_dir(exe_dir: impl AsRef<Path>, filter: &str) -> Result<Self, WinDivertError> {
-        let exe_dir = exe_dir.as_ref();
+        Self::open(exe_dir.as_ref(), filter, WINDIVERT_LAYER_NETWORK, 0)
+    }
+
+    pub fn open_socket_block_from_dir(
+        exe_dir: impl AsRef<Path>,
+        filter: &str,
+    ) -> Result<Self, WinDivertError> {
+        Self::open(
+            exe_dir.as_ref(),
+            filter,
+            WINDIVERT_LAYER_SOCKET,
+            WINDIVERT_FLAG_DROP | WINDIVERT_FLAG_RECV_ONLY,
+        )
+    }
+
+    fn open(exe_dir: &Path, filter: &str, layer: i32, flags: u64) -> Result<Self, WinDivertError> {
         let dll_path = exe_dir.join("WinDivert.dll");
         if !dll_path.exists() {
             return Err(WinDivertError::MissingDll);
@@ -95,9 +119,9 @@ impl WinDivert {
         }
 
         let library = unsafe { Library::new(&dll_path)? };
-        let filter = CString::new(filter).expect("static filter must not contain NUL");
+        let filter = CString::new(filter).map_err(|_| WinDivertError::InvalidFilter)?;
         let open: libloading::Symbol<WinDivertOpenFn> = unsafe { library.get(b"WinDivertOpen")? };
-        let handle = unsafe { open(filter.as_ptr(), WINDIVERT_LAYER_NETWORK, 0, 0) };
+        let handle = unsafe { open(filter.as_ptr(), layer, 0, flags) };
         let invalid = (-1isize) as *mut c_void;
         if handle.is_null() || handle == invalid {
             let err = io::Error::last_os_error()
