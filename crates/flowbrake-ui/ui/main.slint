@@ -1,6 +1,7 @@
 import { LineEdit, ScrollView } from "std-widgets.slint";
 import { CheckBoxSlot } from "widgets.slint";
 import { TitleBar, SettingsDropdown } from "window_chrome.slint";
+export { Translations } from "translations.slint";
 
 export struct ProcessRow {
     process: string,
@@ -474,7 +475,7 @@ component ConnectionRowItem inherits Rectangle {
             }
 
             SidebarActionButton {
-                text: "Disconnect";
+                text: @tr("Disconnect");
                 enabled: root.connection.disconnectable;
                 clicked => {
                     root.disconnect-requested(root.connection.key);
@@ -530,8 +531,8 @@ component SidebarTabButton inherits Rectangle {
 
 component SidebarTabBar inherits Rectangle {
     in property <int> active-index;
-    in property <string> details-label: "Details";
-    in property <string> connections-label: "Connections";
+    in property <string> details-label: @tr("Details");
+    in property <string> connections-label: @tr("Connections");
     in property <length> tab-slot-width;
     callback tab-selected(int);
     height: 36px;
@@ -634,7 +635,7 @@ export component AppWindow inherits Window {
     resize-border-width: 4px;
 
     in property <[ProcessRow]> rows;
-    in property <string> status-text: "Interceptor stopped";
+    in property <string> status-text: @tr("Interceptor stopped");
     in property <bool> running: false;
     in property <int> selected-row: -1;
     in property <bool> sidebar-open: false;
@@ -659,10 +660,10 @@ export component AppWindow inherits Window {
     in property <string> selected-connections-summary: "";
     in property <[ConnectionRow]> selected-connections: [];
     in property <bool> selected-can-disconnect-all: false;
-    in property <string> selected-connections-tab-title: "Connections";
+    in property <string> selected-connections-tab-title: @tr("Connections");
     in-out property <int> selected-sidebar-tab: 0;
-    in property <string> summary-throughput: "DL 0 b/s / UL 0 b/s";
-    in property <string> summary-global-limit: "DL Off / UL Off";
+    in property <string> summary-throughput: @tr("DL 0 b/s / UL 0 b/s");
+    in property <string> summary-global-limit: @tr("DL Off / UL Off");
     in property <string> summary-process-limits: "0";
     in property <string> summary-blocked: "0";
     in property <string> summary-adaptive: "0";
@@ -670,13 +671,14 @@ export component AppWindow inherits Window {
     in property <bool> speed-unit-bits: true;
     in property <bool> ipv6-enabled: true;
     in-out property <bool> settings-open: false;
+    in-out property <int> language-choice: 0;
 
-    property <length> settings-menu-x: root.width - 358px;
+    property <length> settings-menu-x: root.width - 378px;
 
-    property <string> dl-limit-header: root.speed-unit-bits ? "DL Limit Kb/s" : "DL Limit KB/s";
-    property <string> ul-limit-header: root.speed-unit-bits ? "UL Limit Kb/s" : "UL Limit KB/s";
-    property <string> dl-limit-label: root.speed-unit-bits ? "Download Kb/s" : "Download KB/s";
-    property <string> ul-limit-label: root.speed-unit-bits ? "Upload Kb/s" : "Upload KB/s";
+    property <string> dl-limit-header: root.speed-unit-bits ? @tr("DL Limit Kb/s") : @tr("DL Limit KB/s");
+    property <string> ul-limit-header: root.speed-unit-bits ? @tr("UL Limit Kb/s") : @tr("UL Limit KB/s");
+    property <string> dl-limit-label: root.speed-unit-bits ? @tr("Download Kb/s") : @tr("Download KB/s");
+    property <string> ul-limit-label: root.speed-unit-bits ? @tr("Upload Kb/s") : @tr("Upload KB/s");
     property <length> sidebar-content-width: 268px;
     property <length> sidebar-tab-slot-width: 130px;
     property <length> sidebar-details-bottom-padding: 24px;
@@ -705,6 +707,7 @@ export component AppWindow inherits Window {
     callback sidebar-focus-changed(bool);
     callback speed-unit-bits-changed(bool);
     callback ipv6-enabled-changed(bool);
+    callback language-changed(int);
     callback connection-disconnect-requested(string);
     callback disconnect-all-tcp-requested();
 
@@ -778,14 +781,14 @@ export component AppWindow inherits Window {
                 padding-right: 12px;
                 spacing: 8px;
 
-                HeaderCell { text: "Process"; cell-width: 280px; }
+                HeaderCell { text: @tr("Process"); cell-width: 280px; }
                 HeaderCell { text: "PID"; cell-width: 64px; }
-                HeaderCell { text: "DL Speed"; cell-width: 104px; }
-                HeaderCell { text: "UL Speed"; cell-width: 104px; }
+                HeaderCell { text: @tr("DL Speed"); cell-width: 104px; }
+                HeaderCell { text: @tr("UL Speed"); cell-width: 104px; }
                 HeaderCell { text: root.dl-limit-header; cell-width: 132px; }
                 HeaderCell { text: root.ul-limit-header; cell-width: 132px; }
-                HeaderCell { text: "Block"; cell-width: 64px; }
-                HeaderCell { text: "Adaptive"; cell-width: 82px; }
+                HeaderCell { text: @tr("Block"); cell-width: 64px; }
+                HeaderCell { text: @tr("Adaptive"); cell-width: 82px; }
 
                 Rectangle {
                     horizontal-stretch: 1;
@@ -971,18 +974,18 @@ export component AppWindow inherits Window {
                                 width: root.sidebar-content-width;
                                 spacing: 6px;
 
-                                InfoPair { label: "Row Type"; value: root.selected-kind; }
+                                InfoPair { label: @tr("Row Type"); value: root.selected-kind; }
                                 InfoPair { label: "PID"; value: root.selected-pid; }
                                 InfoPair { label: "PIDs"; value: root.selected-pids; }
-                                InfoPair { label: "Download"; value: root.selected-dl-speed; }
-                                InfoPair { label: "Upload"; value: root.selected-ul-speed; }
+                                InfoPair { label: @tr("Download"); value: root.selected-dl-speed; }
+                                InfoPair { label: @tr("Upload"); value: root.selected-ul-speed; }
 
                                 Rectangle { height: 1px; background: #e2e8f0; }
 
-                                SidebarLabel { text: "LIMITS"; }
+                                SidebarLabel { text: @tr("LIMITS"); }
 
                                 SidebarCheck {
-                                    text: "Limit download";
+                                    text: @tr("Limit download");
                                     checked: root.selected-limit-dl;
                                     toggled(value) => { root.selected-bool-rule-edited("limit_dl", value); }
                                 }
@@ -995,7 +998,7 @@ export component AppWindow inherits Window {
                                 }
 
                                 SidebarCheck {
-                                    text: "Limit upload";
+                                    text: @tr("Limit upload");
                                     checked: root.selected-limit-ul;
                                     toggled(value) => { root.selected-bool-rule-edited("limit_ul", value); }
                                 }
@@ -1008,7 +1011,7 @@ export component AppWindow inherits Window {
                                 }
 
                                 SidebarInput {
-                                    label: "Download loss %";
+                                    label: @tr("Download loss %");
                                     value: root.selected-dl-loss;
                                     error: root.selected-dl-loss-error;
                                     submitted(value) => { root.selected-loss-submitted("dl", value); }
@@ -1016,7 +1019,7 @@ export component AppWindow inherits Window {
                                 }
 
                                 SidebarInput {
-                                    label: "Upload loss %";
+                                    label: @tr("Upload loss %");
                                     value: root.selected-ul-loss;
                                     error: root.selected-ul-loss-error;
                                     submitted(value) => { root.selected-loss-submitted("ul", value); }
@@ -1024,7 +1027,7 @@ export component AppWindow inherits Window {
                                 }
 
                                 Text {
-                                    text: "0–100%, up to 2 decimals\n" + root.selected-loss-hint;
+                                    text: @tr("0–100%, up to 2 decimals\n") + root.selected-loss-hint;
                                     color: #65758b;
                                     font-size: 11px;
                                     height: 32px;
@@ -1032,7 +1035,7 @@ export component AppWindow inherits Window {
 
                                 Rectangle { height: 1px; background: #e2e8f0; }
 
-                                SidebarLabel { text: "ACTIONS"; }
+                                SidebarLabel { text: @tr("ACTIONS"); }
 
                                 HorizontalLayout {
                                     width: root.sidebar-content-width;
@@ -1041,14 +1044,14 @@ export component AppWindow inherits Window {
 
                                     SidebarCheck {
                                         horizontal-stretch: 1;
-                                        text: "Block traffic";
+                                        text: @tr("Block traffic");
                                         checked: root.selected-block;
                                         toggled(value) => { root.selected-bool-rule-edited("block", value); }
                                     }
 
                                     SidebarCheck {
                                         horizontal-stretch: 1;
-                                        text: "Adaptive";
+                                        text: @tr("Adaptive");
                                         checked: root.selected-adaptive;
                                         toggled(value) => { root.selected-bool-rule-edited("adaptive", value); }
                                     }
@@ -1061,7 +1064,7 @@ export component AppWindow inherits Window {
 
                                 if root.selected-show-connections: SidebarActionButton {
                                     width: root.sidebar-content-width;
-                                    text: "Disconnect all";
+                                    text: @tr("Disconnect all");
                                     enabled: root.selected-can-disconnect-all;
                                     clicked => {
                                         root.disconnect-all-tcp-requested();
@@ -1128,12 +1131,7 @@ export component AppWindow inherits Window {
                 x: 12px;
                 width: parent.width - 24px;
                 height: parent.height;
-                text: root.status-text
-                    + "   |   " + root.summary-throughput
-                    + "   |   Global " + root.summary-global-limit
-                    + "   |   Limited " + root.summary-process-limits
-                    + "   Blocked " + root.summary-blocked
-                    + "   Adaptive " + root.summary-adaptive;
+                text: @tr("{}   |   {}   |   Global {}   |   Limited {}   Blocked {}   Adaptive {}", root.status-text, root.summary-throughput, root.summary-global-limit, root.summary-process-limits, root.summary-blocked, root.summary-adaptive);
                 color: root.running ? #167454 : #596579;
                 font-size: 12px;
                 vertical-alignment: center;
@@ -1161,6 +1159,11 @@ export component AppWindow inherits Window {
             z: 1;
             speed-unit-bits: root.speed-unit-bits;
             ipv6-enabled: root.ipv6-enabled;
+            language-choice: root.language-choice;
+            language-changed(choice) => {
+                root.language-choice = choice;
+                root.language-changed(choice);
+            }
             speed-unit-bits-changed(bits) => {
                 root.clear-active-inputs();
                 root.speed-unit-bits-changed(bits);

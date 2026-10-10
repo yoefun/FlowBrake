@@ -223,7 +223,7 @@ fn wide_bytes_to_string(bytes: &[u8]) -> Option<String> {
     }
 
     let mut units = Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
+    for chunk in bytes.as_chunks::<2>().0 {
         let unit = u16::from_le_bytes([chunk[0], chunk[1]]);
         if unit == 0 {
             break;
@@ -323,7 +323,7 @@ fn hicon_to_rgba(icon: HICON, size: u32) -> Option<ProcessIcon> {
             return None;
         }
 
-        for pixel in rgba.chunks_exact_mut(4) {
+        for pixel in rgba.as_chunks_mut::<4>().0 {
             let blue = pixel[0];
             let green = pixel[1];
             let red = pixel[2];

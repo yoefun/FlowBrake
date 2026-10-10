@@ -1,0 +1,41 @@
+export global Translations {
+    public function off() -> string { return @tr("Off"); }
+    public function computer() -> string { return @tr("Computer"); }
+    public function all-traffic() -> string { return @tr("All traffic"); }
+    public function process-group() -> string { return @tr("Process group"); }
+    public function process() -> string { return @tr("Process"); }
+    public function process-instance() -> string { return @tr("Process instance"); }
+    public function connections() -> string { return @tr("Connections"); }
+    public function connections-title(count: string) -> string { return @tr("Connections ({})", count); }
+    public function no-connections() -> string { return @tr("No active TCP connections"); }
+    public function connection-count(count: int) -> string {
+        return @tr("{n} TCP connection" | "{n} TCP connections" % count);
+    }
+    public function connections-shown(visible: string, total: string) -> string {
+        return @tr("Showing {0} of {1} TCP connections", visible, total);
+    }
+    public function speed-summary(download: string, upload: string) -> string {
+        return @tr("DL {0} / UL {1}", download, upload);
+    }
+    public function loss-inherit-hint() -> string { return @tr("Blank: use global; 0: off"); }
+    public function loss-off-hint() -> string { return @tr("Blank or 0: off"); }
+    public function loss-invalid() -> string {
+        return @tr("Enter a percentage from 0 to 100 with at most two decimal places");
+    }
+    public function tray-open() -> string { return @tr("Open FlowBrake"); }
+    public function tray-exit() -> string { return @tr("Exit"); }
+    public function stopped() -> string { return @tr("Interceptor stopped"); }
+    public function started() -> string { return @tr("Interceptor running"); }
+    public function admin-required() -> string {
+        return @tr("Administrator privileges are required to start the interceptor.");
+    }
+    public function save-failed(error: string) -> string { return @tr("Failed to save settings: {}", error); }
+    public function engine-failed(error: string) -> string { return @tr("Could not start the interceptor: {}", error); }
+    public function disconnect-failed(error: string) -> string { return @tr("Could not disconnect the TCP connection: {}", error); }
+    public function disconnect-partial(failed: string) -> string { return @tr("Could not disconnect {} TCP connections", failed); }
+    public function language-failed(error: string) -> string { return @tr("Could not change language: {}", error); }
+    public function block-degraded(error: string) -> string { return @tr("Block protection degraded: {}", error); }
+    public function running(download: string, upload: string, packets: string, blocked: string, lost: string, loss-percent: string, limited: string) -> string {
+        return @tr("Interceptor running   v {0}   ^ {1}   |   Packets: {2}   Block: {3}   Loss: {4} ({5}%)   Limit: {6}", download, upload, packets, blocked, lost, loss-percent, limited);
+    }
+}

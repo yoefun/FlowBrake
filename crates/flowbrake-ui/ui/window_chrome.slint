@@ -166,11 +166,13 @@ component SettingsCheckItem inherits Rectangle {
 export component SettingsDropdown inherits Rectangle {
     in property <bool> speed-unit-bits;
     in property <bool> ipv6-enabled;
+    in property <int> language-choice;
+    callback language-changed(int);
     callback speed-unit-bits-changed(bool);
     callback ipv6-enabled-changed(bool);
     callback close-requested();
 
-    width: 220px;
+    width: 240px;
     height: menu.preferred-height;
     background: #ffffff;
     border-color: #d7e0eb;
@@ -191,7 +193,7 @@ export component SettingsDropdown inherits Rectangle {
             padding-right: 12px;
 
             Text {
-                text: "Speed units";
+                text: @tr("Speed units");
                 color: #65758b;
                 font-size: 11px;
                 font-weight: 700;
@@ -200,7 +202,7 @@ export component SettingsDropdown inherits Rectangle {
         }
 
         SettingsMenuItem {
-            text: "ISP units (Kb/s)";
+            text: @tr("ISP units (Kb/s)");
             selected: root.speed-unit-bits;
             activate => {
                 root.speed-unit-bits-changed(true);
@@ -209,7 +211,7 @@ export component SettingsDropdown inherits Rectangle {
         }
 
         SettingsMenuItem {
-            text: "Standard units (KB/s)";
+            text: @tr("Standard units (KB/s)");
             selected: !root.speed-unit-bits;
             activate => {
                 root.speed-unit-bits-changed(false);
@@ -227,8 +229,38 @@ export component SettingsDropdown inherits Rectangle {
             }
         }
 
+        HorizontalLayout {
+            height: 18px;
+            padding-left: 12px;
+            Text {
+                text: @tr("Language");
+                color: #65758b;
+                font-size: 11px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+        }
+        SettingsMenuItem {
+            text: @tr("Follow system");
+            selected: root.language-choice == 0;
+            activate => { root.language-changed(0); root.close-requested(); }
+        }
+        SettingsMenuItem {
+            text: "简体中文";
+            selected: root.language-choice == 1;
+            activate => { root.language-changed(1); root.close-requested(); }
+        }
+        SettingsMenuItem {
+            text: "English";
+            selected: root.language-choice == 2;
+            activate => { root.language-changed(2); root.close-requested(); }
+        }
+        Rectangle {
+            height: 9px;
+            Rectangle { y: 4px; height: 1px; background: #e4eaf2; }
+        }
         SettingsCheckItem {
-            text: "IPv6 support";
+            text: @tr("IPv6 support");
             checked: root.ipv6-enabled;
             toggled(enabled) => {
                 root.ipv6-enabled-changed(enabled);

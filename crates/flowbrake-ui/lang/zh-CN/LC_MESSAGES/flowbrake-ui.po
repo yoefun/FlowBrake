@@ -1,0 +1,192 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh-CN\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "0–100%, up to 2 decimals\n"
+msgstr "0–100%，最多两位小数\n"
+
+msgid "ACTIONS"
+msgstr "操作"
+
+msgid "Adaptive"
+msgstr "自适应"
+
+msgid "Administrator privileges are required to start the interceptor."
+msgstr "启动拦截器需要管理员权限。"
+
+msgid "All traffic"
+msgstr "全部流量"
+
+msgid "Blank or 0: off"
+msgstr "留空或 0：关闭"
+
+msgid "Blank: use global; 0: off"
+msgstr "留空：使用全局设置；0：关闭"
+
+msgid "Block"
+msgstr "阻断"
+
+msgid "Block protection degraded: {}"
+msgstr "阻断防护已降级：{}"
+
+msgid "Block traffic"
+msgstr "阻断流量"
+
+msgid "Computer"
+msgstr "本机"
+
+msgid "Connections"
+msgstr "连接"
+
+msgid "Connections ({})"
+msgstr "连接 ({})"
+
+msgid "Could not change language: {}"
+msgstr "无法切换语言：{}"
+
+msgid "Could not disconnect the TCP connection: {}"
+msgstr "无法断开 TCP 连接：{}"
+
+msgid "Could not disconnect {} TCP connections"
+msgstr "无法断开 {} 个 TCP 连接"
+
+msgid "Could not start the interceptor: {}"
+msgstr "无法启动拦截器：{}"
+
+msgid "DL 0 b/s / UL 0 b/s"
+msgstr "下载 0 b/s / 上传 0 b/s"
+
+msgid "DL Limit KB/s"
+msgstr "下载限速 KB/s"
+
+msgid "DL Limit Kb/s"
+msgstr "下载限速 Kb/s"
+
+msgid "DL Off / UL Off"
+msgstr "下载 关闭 / 上传 关闭"
+
+msgid "DL Speed"
+msgstr "下载速度"
+
+msgid "DL {0} / UL {1}"
+msgstr "下载 {0} / 上传 {1}"
+
+msgid "Details"
+msgstr "详情"
+
+msgid "Disconnect"
+msgstr "断开连接"
+
+msgid "Disconnect all"
+msgstr "断开全部连接"
+
+msgid "Download"
+msgstr "下载"
+
+msgid "Download KB/s"
+msgstr "下载 KB/s"
+
+msgid "Download Kb/s"
+msgstr "下载 Kb/s"
+
+msgid "Download loss %"
+msgstr "下载丢包 %"
+
+msgid "Enter a percentage from 0 to 100 with at most two decimal places"
+msgstr "请输入 0 到 100 的百分比，最多两位小数"
+
+msgid "Exit"
+msgstr "退出"
+
+msgid "Failed to save settings: {}"
+msgstr "保存设置失败：{}"
+
+msgid "Follow system"
+msgstr "跟随系统"
+
+msgid "IPv6 support"
+msgstr "IPv6 支持"
+
+msgid "ISP units (Kb/s)"
+msgstr "运营商单位 (Kb/s)"
+
+msgid "Interceptor running"
+msgstr "拦截器运行中"
+
+msgid "Interceptor running   v {0}   ^ {1}   |   Packets: {2}   Block: {3}   Loss: {4} ({5}%)   Limit: {6}"
+msgstr "拦截器运行中   v {0}   ^ {1}   |   数据包：{2}   阻断：{3}   丢包：{4} ({5}%)   限速：{6}"
+
+msgid "Interceptor stopped"
+msgstr "拦截器已停止"
+
+msgid "LIMITS"
+msgstr "限制"
+
+msgid "Language"
+msgstr "语言"
+
+msgid "Limit download"
+msgstr "限制下载"
+
+msgid "Limit upload"
+msgstr "限制上传"
+
+msgid "No active TCP connections"
+msgstr "无活动 TCP 连接"
+
+msgid "Off"
+msgstr "关闭"
+
+msgid "Open FlowBrake"
+msgstr "打开 FlowBrake"
+
+msgid "Process"
+msgstr "进程"
+
+msgid "Process group"
+msgstr "进程组"
+
+msgid "Process instance"
+msgstr "进程实例"
+
+msgid "Row Type"
+msgstr "类型"
+
+msgid "Showing {0} of {1} TCP connections"
+msgstr "显示 {1} 个 TCP 连接中的 {0} 个"
+
+msgid "Speed units"
+msgstr "速度单位"
+
+msgid "Standard units (KB/s)"
+msgstr "标准单位 (KB/s)"
+
+msgid "UL Limit KB/s"
+msgstr "上传限速 KB/s"
+
+msgid "UL Limit Kb/s"
+msgstr "上传限速 Kb/s"
+
+msgid "UL Speed"
+msgstr "上传速度"
+
+msgid "Upload"
+msgstr "上传"
+
+msgid "Upload KB/s"
+msgstr "上传 KB/s"
+
+msgid "Upload Kb/s"
+msgstr "上传 Kb/s"
+
+msgid "Upload loss %"
+msgstr "上传丢包 %"
+
+msgid "{n} TCP connection"
+msgid_plural "{n} TCP connections"
+msgstr[0] "{n} 个 TCP 连接"
+
+msgid "{}   |   {}   |   Global {}   |   Limited {}   Blocked {}   Adaptive {}"
+msgstr "{}   |   {}   |   全局 {}   |   限速 {}   阻断 {}   自适应 {}"

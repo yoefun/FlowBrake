@@ -31,6 +31,10 @@ jobs:
         shell: pwsh
         run: cargo fmt --all -- --check
 
+      - name: Check translations
+        shell: pwsh
+        run: .\scripts\check-translations.ps1
+
       - name: Run tests
         shell: pwsh
         run: cargo test --workspace

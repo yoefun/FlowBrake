@@ -26,12 +26,14 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
 };
 
+mod i18n;
 mod process_search;
 mod settings;
 mod window_chrome;
 
 use process_search::{ProcessSearchLocate, locate_in_rows};
 
+use i18n::LanguagePreference;
 use settings::AppSettings;
 
 slint::include_modules!();
@@ -56,11 +58,13 @@ struct AppState {
     suppress_table_refresh_until: Option<Instant>,
     limit_editing: bool,
     loss_selection: Option<RowSelection>,
-    loss_download_draft: Option<(String, String)>,
-    loss_upload_draft: Option<(String, String)>,
+    loss_download_draft: Option<String>,
+    loss_upload_draft: Option<String>,
     selected: Option<RowSelection>,
     speed_unit: SpeedUnit,
     ipv6_enabled: bool,
+    language: LanguagePreference,
+    status: StatusMessage,
     last_row_click: Option<(i32, Instant)>,
     icon_cache: HashMap<String, Image>,
     process_cache: ProcessMetadataCache,
@@ -111,7 +115,7 @@ impl AppState {
             global_ul_history: RollingAverage::new(5),
             global_dl_bps: 0.0,
             global_ul_bps: 0.0,
-            tray: TrayController::new().ok(),
+            tray: None,
             suppress_table_refresh_until: None,
             limit_editing: false,
             loss_selection: None,
@@ -120,6 +124,8 @@ impl AppState {
             selected: None,
             speed_unit: SpeedUnit::from_bits_mode(settings.speed_unit_bits),
             ipv6_enabled: settings.ipv6_enabled,
+            language: settings.language,
+            status: StatusMessage::Stopped,
             last_row_click: None,
             icon_cache: HashMap::new(),
             process_cache: ProcessMetadataCache::default(),
@@ -173,6 +179,7 @@ impl AppState {
         AppSettings {
             speed_unit_bits: matches!(self.speed_unit, SpeedUnit::Bits),
             ipv6_enabled: self.ipv6_enabled,
+            language: self.language,
             global_rule: self.global_rule.clone(),
             name_rules: self.name_rules.clone(),
             expanded: self.expanded.clone(),
@@ -442,8 +449,8 @@ impl AppState {
                 *draft = None;
                 value
             }
-            Err(error) => {
-                *draft = Some((text.to_string(), error.to_string()));
+            Err(_) => {
+                *draft = Some(text.to_string());
                 return false;
             }
         };
@@ -457,7 +464,7 @@ impl AppState {
         true
     }
 
-    fn tick(&mut self) -> TickStatus {
+    fn tick(&mut self) -> bool {
         let snapshot = self.engine.snapshot_and_reset();
         let seen_pids: HashSet<u32> = snapshot.per_pid.keys().copied().collect();
         for (pid, (download, upload)) in snapshot.per_pid {
@@ -508,30 +515,30 @@ impl AppState {
             self.run_adaptive_feedback();
         }
 
-        TickStatus {
-            running: snapshot.running,
-            text: if let Some(error) = snapshot.block_error {
-                format!("Block protection degraded: {error}")
-            } else if snapshot.running {
-                format!(
-                    "Interceptor running   v {}   ^ {}   |   Packets: {}   Block: {}   Loss: {} ({:.2}%)   Limit: {}",
-                    format_speed(self.global_dl_bps, self.speed_unit),
-                    format_speed(self.global_ul_bps, self.speed_unit),
-                    snapshot.packets_processed,
-                    snapshot.packets_blocked,
-                    snapshot.packets_loss_dropped,
+        self.status = if let Some(error) = snapshot.block_error {
+            StatusMessage::BlockDegraded(error)
+        } else if snapshot.running {
+            StatusMessage::Running {
+                download: format_speed(self.global_dl_bps, self.speed_unit),
+                upload: format_speed(self.global_ul_bps, self.speed_unit),
+                packets: snapshot.packets_processed.to_string(),
+                blocked: snapshot.packets_blocked.to_string(),
+                lost: snapshot.packets_loss_dropped.to_string(),
+                loss_percent: format!(
+                    "{:.2}",
                     if snapshot.packets_loss_eligible == 0 {
                         0.0
                     } else {
                         snapshot.packets_loss_dropped as f64 * 100.0
                             / snapshot.packets_loss_eligible as f64
-                    },
-                    snapshot.packets_rate_dropped
-                )
-            } else {
-                "Interceptor stopped".to_string()
-            },
-        }
+                    }
+                ),
+                limited: snapshot.packets_rate_dropped.to_string(),
+            }
+        } else {
+            StatusMessage::Stopped
+        };
+        snapshot.running
     }
 
     fn can_refresh_table(&self) -> bool {
@@ -757,15 +764,71 @@ fn runtime_rule(rule: &ProcessRule) -> ProcessRule {
     runtime
 }
 
-struct TickStatus {
-    running: bool,
-    text: String,
+#[derive(Debug)]
+enum StatusMessage {
+    Stopped,
+    Started,
+    AdminRequired,
+    SaveFailed(String),
+    EngineFailed(String),
+    DisconnectFailed(String),
+    DisconnectPartial(usize),
+    LanguageFailed(String),
+    BlockDegraded(String),
+    Running {
+        download: String,
+        upload: String,
+        packets: String,
+        blocked: String,
+        lost: String,
+        loss_percent: String,
+        limited: String,
+    },
+}
+impl StatusMessage {
+    fn text(&self, app: &AppWindow) -> SharedString {
+        let tr = app.global::<Translations>();
+        match self {
+            Self::Stopped => tr.invoke_stopped(),
+            Self::Started => tr.invoke_started(),
+            Self::AdminRequired => tr.invoke_admin_required(),
+            Self::SaveFailed(e) => tr.invoke_save_failed(e.as_str().into()),
+            Self::EngineFailed(e) => tr.invoke_engine_failed(e.as_str().into()),
+            Self::DisconnectFailed(e) => tr.invoke_disconnect_failed(e.as_str().into()),
+            Self::DisconnectPartial(n) => tr.invoke_disconnect_partial(n.to_string().into()),
+            Self::LanguageFailed(e) => tr.invoke_language_failed(e.as_str().into()),
+            Self::BlockDegraded(e) => tr.invoke_block_degraded(e.as_str().into()),
+            Self::Running {
+                download,
+                upload,
+                packets,
+                blocked,
+                lost,
+                loss_percent,
+                limited,
+            } => tr.invoke_running(
+                download.as_str().into(),
+                upload.as_str().into(),
+                packets.as_str().into(),
+                blocked.as_str().into(),
+                lost.as_str().into(),
+                loss_percent.as_str().into(),
+                limited.as_str().into(),
+            ),
+        }
+    }
+}
+fn set_status(app: &AppWindow, state: &Rc<RefCell<AppState>>, status: StatusMessage) {
+    app.set_status_text(status.text(app));
+    state.borrow_mut().status = status;
 }
 
 struct TrayController {
     icon: TrayIcon,
     open_id: MenuId,
     exit_id: MenuId,
+    open: MenuItem,
+    exit: MenuItem,
 }
 
 enum TrayAction {
@@ -774,10 +837,11 @@ enum TrayAction {
 }
 
 impl TrayController {
-    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(app: &AppWindow) -> Result<Self, Box<dyn std::error::Error>> {
         let menu = Menu::new();
-        let open = MenuItem::new("Open FlowBrake", true, None);
-        let exit = MenuItem::new("Exit", true, None);
+        let tr = app.global::<Translations>();
+        let open = MenuItem::new(tr.invoke_tray_open(), true, None);
+        let exit = MenuItem::new(tr.invoke_tray_exit(), true, None);
         let separator = PredefinedMenuItem::separator();
         menu.append_items(&[&open, &separator, &exit])?;
 
@@ -792,7 +856,15 @@ impl TrayController {
             icon,
             open_id: open.id().clone(),
             exit_id: exit.id().clone(),
+            open,
+            exit,
         })
+    }
+
+    fn update_language(&self, app: &AppWindow) {
+        let tr = app.global::<Translations>();
+        self.open.set_text(tr.invoke_tray_open());
+        self.exit.set_text(tr.invoke_tray_exit());
     }
 
     fn poll_action(&self) -> Option<TrayAction> {
@@ -840,37 +912,138 @@ fn persist_settings(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     let mut settings = state.borrow().to_settings();
     settings.capture_window(app.window());
     if let Err(err) = settings.save() {
-        app.set_status_text(format!("Failed to save settings: {err}").into());
+        set_status(app, state, StatusMessage::SaveFailed(err));
+    }
+}
+
+fn apply_language(app: &AppWindow, state: &Rc<RefCell<AppState>>, choice: i32) {
+    if change_language(app, state, choice) {
+        persist_settings(app, state);
+    }
+}
+
+fn change_language(app: &AppWindow, state: &Rc<RefCell<AppState>>, choice: i32) -> bool {
+    let preference = LanguagePreference::from_choice(choice);
+    if let Err(error) = slint::select_bundled_translation(preference.resolve().slint_locale()) {
+        app.set_language_choice(state.borrow().language.choice());
+        set_status(app, state, StatusMessage::LanguageFailed(error.to_string()));
+        return false;
+    }
+    {
+        let mut state = state.borrow_mut();
+        state.language = preference;
+        if let Some(tray) = &state.tray {
+            tray.update_language(app);
+        }
+        app.set_status_text(state.status.text(app));
+    }
+    app.set_language_choice(preference.choice());
+    refresh_language_text(app, &state.borrow());
+    true
+}
+
+// Update existing models and text properties without rebuilding controls or input drafts.
+fn refresh_language_text(app: &AppWindow, state: &AppState) {
+    let tr = app.global::<Translations>();
+    if let Some(model) = &state.ui_rows {
+        for (index, row) in state.rows.iter().enumerate() {
+            if let Some(mut ui_row) = model.row_data(index) {
+                ui_row.dl_limit = limit_display_text(
+                    app,
+                    row.rule.limit_download,
+                    row.rule.download_kbps,
+                    state.speed_unit,
+                );
+                ui_row.ul_limit = limit_display_text(
+                    app,
+                    row.rule.limit_upload,
+                    row.rule.upload_kbps,
+                    state.speed_unit,
+                );
+                model.set_row_data(index, ui_row);
+            }
+        }
+    }
+    update_summary_panel(app, state);
+    if let Some(row) = state.selected_row() {
+        let global = matches!(row.kind, RowKind::Global);
+        app.set_selected_kind(match &row.kind {
+            RowKind::Global => tr.invoke_computer(),
+            RowKind::Group { pids, .. } if pids.len() > 1 => tr.invoke_process_group(),
+            RowKind::Group { .. } => tr.invoke_process(),
+            RowKind::Child { .. } => tr.invoke_process_instance(),
+        });
+        if global {
+            app.set_selected_pids(tr.invoke_all_traffic());
+        }
+        app.set_selected_loss_hint(if global {
+            tr.invoke_loss_off_hint()
+        } else {
+            tr.invoke_loss_inherit_hint()
+        });
+        app.set_selected_dl_loss_error(if state.loss_download_draft.is_some() {
+            tr.invoke_loss_invalid()
+        } else {
+            "".into()
+        });
+        app.set_selected_ul_loss_error(if state.loss_upload_draft.is_some() {
+            tr.invoke_loss_invalid()
+        } else {
+            "".into()
+        });
+        if !global {
+            let count = state
+                .connections_for_pids(&pids_for_row_kind(&row.kind))
+                .len();
+            app.set_selected_connections_summary(connections_summary(app, count).into());
+            app.set_selected_connections_tab_title(connections_tab_title(app, count).into());
+        } else {
+            app.set_selected_connections_tab_title(tr.invoke_connections());
+        }
     }
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    let settings = AppSettings::load();
+    let language = settings.language.resolve();
     if !is_elevated() {
         match relaunch_as_admin(&[]) {
             RelaunchResult::Started => return Ok(()),
             RelaunchResult::Cancelled => {
-                show_admin_required_message(
-                    "FlowBrake needs administrator approval to intercept network traffic.\n\
-                     Please run it again and choose Yes on the UAC prompt.",
-                );
+                show_admin_required_message(i18n::bootstrap_admin_required(language));
                 return Ok(());
             }
             RelaunchResult::Failed(err) => {
-                show_admin_required_message(&format!(
-                    "FlowBrake could not request administrator privileges.\n{err}"
+                show_admin_required_message(&i18n::bootstrap_admin_failed(
+                    language,
+                    &err.to_string(),
                 ));
                 return Ok(());
             }
         }
     }
 
-    let settings = AppSettings::load();
     let window_settings = settings.clone();
     let app = AppWindow::new()?;
+    if let Err(error) = slint::select_bundled_translation(language.slint_locale()) {
+        eprintln!("Could not select translation: {error}");
+        let _ = slint::select_bundled_translation("");
+    }
+    app.set_language_choice(settings.language.choice());
     app.set_window_maximized(window_settings.window_maximized);
     app.set_speed_unit_bits(settings.speed_unit_bits);
     app.set_ipv6_enabled(settings.ipv6_enabled);
     let state = Rc::new(RefCell::new(AppState::new(settings)));
+    state.borrow_mut().tray = TrayController::new(&app).ok();
+
+    {
+        let app_weak = app.as_weak();
+        let state = Rc::clone(&state);
+        app.on_language_changed(move |choice| {
+            let app = app_weak.unwrap();
+            apply_language(&app, &state, choice);
+        });
+    }
 
     render_rows(&app, &state);
 
@@ -916,7 +1089,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     settings.capture_window(app.window());
                 }
                 if let Err(err) = settings.save() {
-                    app.set_status_text(format!("Failed to save settings: {err}").into());
+                    set_status(&app, &state, StatusMessage::SaveFailed(err));
                 }
             }
         });
@@ -1073,8 +1246,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
                 state_ref.engine.is_running()
             };
-            if needs_restart && let Err(err) = state.borrow_mut().restart_engine() {
-                app.set_status_text(err.into());
+            if needs_restart {
+                let result = state.borrow_mut().restart_engine();
+                if let Err(err) = result {
+                    set_status(&app, &state, StatusMessage::EngineFailed(err));
+                }
             }
             app.set_ipv6_enabled(enabled);
             app.set_running(state.borrow().engine.is_running());
@@ -1088,8 +1264,14 @@ fn main() -> Result<(), slint::PlatformError> {
         let state = Rc::clone(&state);
         app.on_connection_disconnect_requested(move |key| {
             let app = app_weak.unwrap();
-            if let Some(conn_key) = TcpConnectionKey::decode_id(key.as_str()) {
-                let _ = close_tcp_connection(&conn_key);
+            if let Some(conn_key) = TcpConnectionKey::decode_id(key.as_str())
+                && let Err(error) = close_tcp_connection(&conn_key)
+            {
+                set_status(
+                    &app,
+                    &state,
+                    StatusMessage::DisconnectFailed(error.to_string()),
+                );
             }
             state.borrow_mut().refresh_connections();
             update_selected_sidebar(&app, &state);
@@ -1110,7 +1292,19 @@ fn main() -> Result<(), slint::PlatformError> {
                 (pids, state_ref.all_connections.clone())
             };
             if !pids.is_empty() {
-                close_tcp_connections_for_pids(&pids, &connections);
+                let expected = connections
+                    .iter()
+                    .filter(|connection| {
+                        pids.contains(&connection.pid)
+                            && connection.state.is_disconnectable()
+                            && !connection.key.ipv6
+                    })
+                    .count();
+                let closed = close_tcp_connections_for_pids(&pids, &connections);
+                let failed = expected.saturating_sub(closed);
+                if failed > 0 {
+                    set_status(&app, &state, StatusMessage::DisconnectPartial(failed));
+                }
             }
             state.borrow_mut().refresh_connections();
             update_selected_sidebar(&app, &state);
@@ -1183,10 +1377,10 @@ fn main() -> Result<(), slint::PlatformError> {
             let Ok(mut state_ref) = state.try_borrow_mut() else {
                 return;
             };
-            let status = state_ref.tick();
+            let running = state_ref.tick();
             app.set_window_maximized(app.window().is_maximized());
-            app.set_running(status.running);
-            app.set_status_text(status.text.into());
+            app.set_running(running);
+            app.set_status_text(state_ref.status.text(&app));
             let refresh_table = state_ref.can_refresh_table();
             drop(state_ref);
             if refresh_table {
@@ -1238,20 +1432,19 @@ fn main() -> Result<(), slint::PlatformError> {
 fn apply_engine_start(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     if !is_elevated() {
         app.set_running(false);
-        app.set_status_text(
-            "Administrator privileges are required to start the interceptor.".into(),
-        );
+        set_status(app, state, StatusMessage::AdminRequired);
         return;
     }
 
-    match state.borrow_mut().start() {
+    let result = state.borrow_mut().start();
+    match result {
         Ok(()) => {
             app.set_running(true);
-            app.set_status_text("Interceptor running".into());
+            set_status(app, state, StatusMessage::Started);
         }
         Err(err) => {
             app.set_running(false);
-            app.set_status_text(err.into());
+            set_status(app, state, StatusMessage::EngineFailed(err));
         }
     }
 }
@@ -1260,7 +1453,7 @@ fn apply_engine_stop(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     state.borrow_mut().stop();
     state.borrow().set_tray_visible(false);
     app.set_running(false);
-    app.set_status_text("Interceptor stopped".into());
+    set_status(app, state, StatusMessage::Stopped);
     render_rows(app, state);
 }
 
@@ -1317,7 +1510,15 @@ fn publish_full_table(app: &AppWindow, state: &mut AppState) {
     let rows: Vec<ProcessRow> = state
         .rows
         .iter()
-        .map(|row| to_ui_row(row, speed_unit, &mut state.icon_cache, &state.computer_name))
+        .map(|row| {
+            to_ui_row(
+                app,
+                row,
+                speed_unit,
+                &mut state.icon_cache,
+                &state.computer_name,
+            )
+        })
         .collect();
     let model = StdRc::new(VecModel::from(rows));
     app.set_rows(ModelRc::from(model.clone()));
@@ -1370,15 +1571,13 @@ fn update_summary_panel(app: &AppWindow, state: &AppState) {
     let adaptive = state.rules.values().filter(|rule| rule.adaptive).count()
         + usize::from(state.global_rule.adaptive);
 
-    app.set_summary_throughput(
-        format!(
-            "DL {} / UL {}",
-            format_speed(state.global_dl_bps, state.speed_unit),
-            format_speed(state.global_ul_bps, state.speed_unit)
-        )
-        .into(),
+    app.set_summary_throughput(app.global::<Translations>().invoke_speed_summary(
+        format_speed(state.global_dl_bps, state.speed_unit).into(),
+        format_speed(state.global_ul_bps, state.speed_unit).into(),
+    ));
+    app.set_summary_global_limit(
+        global_limit_summary(app, &state.global_rule, state.speed_unit).into(),
     );
-    app.set_summary_global_limit(global_limit_summary(&state.global_rule, state.speed_unit).into());
     app.set_summary_process_limits(process_limits.to_string().into());
     app.set_summary_blocked(blocked.to_string().into());
     app.set_summary_adaptive(adaptive.to_string().into());
@@ -1421,18 +1620,22 @@ fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
     let (title, kind, pid, pids) = match &row.kind {
         RowKind::Global => (
             state.computer_name.clone(),
-            "Computer".to_string(),
+            app.global::<Translations>().invoke_computer().to_string(),
             "-".to_string(),
-            "All traffic".to_string(),
+            app.global::<Translations>()
+                .invoke_all_traffic()
+                .to_string(),
         ),
         RowKind::Group {
             display_name, pids, ..
         } => (
             display_name.clone(),
             if pids.len() > 1 {
-                "Process group".to_string()
+                app.global::<Translations>()
+                    .invoke_process_group()
+                    .to_string()
             } else {
-                "Process".to_string()
+                app.global::<Translations>().invoke_process().to_string()
             },
             if pids.len() == 1 {
                 pids[0].to_string()
@@ -1445,7 +1648,9 @@ fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
             display_name, pid, ..
         } => (
             display_name.clone(),
-            "Process instance".to_string(),
+            app.global::<Translations>()
+                .invoke_process_instance()
+                .to_string(),
             pid.to_string(),
             pid.to_string(),
         ),
@@ -1459,52 +1664,39 @@ fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
     app.set_selected_dl_speed(format_speed(row.dl_bps, state.speed_unit).into());
     app.set_selected_ul_speed(format_speed(row.ul_bps, state.speed_unit).into());
     app.set_selected_limit_dl(row.rule.limit_download);
-    app.set_selected_dl_limit(limit_text(row.rule.download_kbps, state.speed_unit));
-    app.set_selected_limit_ul(row.rule.limit_upload);
-    app.set_selected_ul_limit(limit_text(row.rule.upload_kbps, state.speed_unit));
     if !state.limit_editing || selection_changed {
-        let (download, download_error) = state.loss_download_draft.clone().unwrap_or_else(|| {
-            (
-                format_loss_percent(row.rule.download_loss_basis_points),
-                String::new(),
-            )
-        });
-        let (upload, upload_error) = state.loss_upload_draft.clone().unwrap_or_else(|| {
-            (
-                format_loss_percent(row.rule.upload_loss_basis_points),
-                String::new(),
-            )
-        });
+        app.set_selected_dl_limit(limit_text(row.rule.download_kbps, state.speed_unit));
+        app.set_selected_ul_limit(limit_text(row.rule.upload_kbps, state.speed_unit));
+    }
+    app.set_selected_limit_ul(row.rule.limit_upload);
+    if !state.limit_editing || selection_changed {
+        let download = state
+            .loss_download_draft
+            .clone()
+            .unwrap_or_else(|| format_loss_percent(row.rule.download_loss_basis_points));
+        let upload = state
+            .loss_upload_draft
+            .clone()
+            .unwrap_or_else(|| format_loss_percent(row.rule.upload_loss_basis_points));
         app.set_selected_dl_loss(download.into());
         app.set_selected_ul_loss(upload.into());
-        app.set_selected_dl_loss_error(download_error.into());
-        app.set_selected_ul_loss_error(upload_error.into());
-    } else {
-        app.set_selected_dl_loss_error(
-            state
-                .loss_download_draft
-                .as_ref()
-                .map(|(_, error)| error.as_str())
-                .unwrap_or("")
-                .into(),
-        );
-        app.set_selected_ul_loss_error(
-            state
-                .loss_upload_draft
-                .as_ref()
-                .map(|(_, error)| error.as_str())
-                .unwrap_or("")
-                .into(),
-        );
     }
-    app.set_selected_loss_hint(
-        if show_connections {
-            "Blank: use global; 0: off"
-        } else {
-            "Blank or 0: off"
-        }
-        .into(),
-    );
+    let tr = app.global::<Translations>();
+    app.set_selected_dl_loss_error(if state.loss_download_draft.is_some() {
+        tr.invoke_loss_invalid()
+    } else {
+        "".into()
+    });
+    app.set_selected_ul_loss_error(if state.loss_upload_draft.is_some() {
+        tr.invoke_loss_invalid()
+    } else {
+        "".into()
+    });
+    app.set_selected_loss_hint(if show_connections {
+        tr.invoke_loss_inherit_hint()
+    } else {
+        tr.invoke_loss_off_hint()
+    });
     app.set_selected_block(row.rule.block_all);
     app.set_selected_adaptive(row.rule.adaptive);
 
@@ -1521,8 +1713,8 @@ fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
             .iter()
             .any(|connection| connection.state.is_disconnectable() && !connection.key.ipv6);
         app.set_selected_show_connections(true);
-        app.set_selected_connections_summary(connections_summary(total).into());
-        app.set_selected_connections_tab_title(connections_tab_title(total).into());
+        app.set_selected_connections_summary(connections_summary(app, total).into());
+        app.set_selected_connections_tab_title(connections_tab_title(app, total).into());
         app.set_selected_can_disconnect_all(disconnectable);
         app.set_selected_connections(ModelRc::new(VecModel::from(visible)));
     } else {
@@ -1533,18 +1725,20 @@ fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
 fn clear_connections_sidebar(app: &AppWindow) {
     app.set_selected_show_connections(false);
     app.set_selected_connections_summary("".into());
-    app.set_selected_connections_tab_title("Connections".into());
+    app.set_selected_connections_tab_title(app.global::<Translations>().invoke_connections());
     app.set_selected_sidebar_tab(0);
     app.set_selected_can_disconnect_all(false);
     app.set_selected_connections(ModelRc::new(VecModel::from(Vec::<ConnectionRow>::new())));
 }
 
-fn connections_tab_title(total: usize) -> String {
+fn connections_tab_title(app: &AppWindow, total: usize) -> String {
+    let tr = app.global::<Translations>();
     if total == 0 {
-        "Connections".to_string()
+        tr.invoke_connections()
     } else {
-        format!("Connections ({total})")
+        tr.invoke_connections_title(total.to_string().into())
     }
+    .to_string()
 }
 
 fn pids_for_row_kind(kind: &RowKind) -> Vec<u32> {
@@ -1555,17 +1749,20 @@ fn pids_for_row_kind(kind: &RowKind) -> Vec<u32> {
     }
 }
 
-fn connections_summary(total: usize) -> String {
+fn connections_summary(app: &AppWindow, total: usize) -> String {
+    let tr = app.global::<Translations>();
     if total == 0 {
-        return "No active TCP connections".to_string();
+        return tr.invoke_no_connections().to_string();
     }
     if total > MAX_VISIBLE_CONNECTIONS {
-        return format!("Showing {MAX_VISIBLE_CONNECTIONS} of {total} TCP connections");
+        return tr
+            .invoke_connections_shown(
+                MAX_VISIBLE_CONNECTIONS.to_string().into(),
+                total.to_string().into(),
+            )
+            .to_string();
     }
-    format!(
-        "{total} TCP connection{}",
-        if total == 1 { "" } else { "s" }
-    )
+    tr.invoke_connection_count(total as i32).to_string()
 }
 
 fn to_ui_connection_row(connection: &TcpConnection, show_pid: bool) -> ConnectionRow {
@@ -1608,6 +1805,7 @@ fn icon_for_exe_path(icon_cache: &mut HashMap<String, Image>, exe_path: &str) ->
 }
 
 fn to_ui_row(
+    app: &AppWindow,
     row: &CoreProcessRow,
     unit: SpeedUnit,
     icon_cache: &mut HashMap<String, Image>,
@@ -1691,10 +1889,10 @@ fn to_ui_row(
         dl_speed: SharedString::from(format_speed(row.dl_bps, unit)),
         ul_speed: SharedString::from(format_speed(row.ul_bps, unit)),
         limit_dl: row.rule.limit_download,
-        dl_limit: limit_display_text(row.rule.limit_download, row.rule.download_kbps, unit),
+        dl_limit: limit_display_text(app, row.rule.limit_download, row.rule.download_kbps, unit),
         dl_limit_edit: limit_text(row.rule.download_kbps, unit),
         limit_ul: row.rule.limit_upload,
-        ul_limit: limit_display_text(row.rule.limit_upload, row.rule.upload_kbps, unit),
+        ul_limit: limit_display_text(app, row.rule.limit_upload, row.rule.upload_kbps, unit),
         ul_limit_edit: limit_text(row.rule.upload_kbps, unit),
         block: row.rule.block_all,
         adaptive: row.rule.adaptive,
@@ -1728,33 +1926,151 @@ fn limit_text(kibps: u32, unit: SpeedUnit) -> SharedString {
     }
 }
 
-fn limit_display_text(enabled: bool, kibps: u32, unit: SpeedUnit) -> SharedString {
+fn limit_display_text(app: &AppWindow, enabled: bool, kibps: u32, unit: SpeedUnit) -> SharedString {
     if enabled && kibps > 0 {
         SharedString::from(format_limit_kibps(kibps, unit))
     } else {
-        SharedString::from("Off")
+        app.global::<Translations>().invoke_off()
     }
 }
 
-fn global_limit_summary(rule: &GlobalRule, unit: SpeedUnit) -> String {
-    format!(
-        "DL {} / UL {}",
-        limit_summary_text(rule.limit_download, rule.download_kbps, unit),
-        limit_summary_text(rule.limit_upload, rule.upload_kbps, unit)
-    )
+fn global_limit_summary(app: &AppWindow, rule: &GlobalRule, unit: SpeedUnit) -> String {
+    app.global::<Translations>()
+        .invoke_speed_summary(
+            limit_summary_text(app, rule.limit_download, rule.download_kbps, unit).into(),
+            limit_summary_text(app, rule.limit_upload, rule.upload_kbps, unit).into(),
+        )
+        .to_string()
 }
-
-fn limit_summary_text(enabled: bool, kibps: u32, unit: SpeedUnit) -> String {
+fn limit_summary_text(app: &AppWindow, enabled: bool, kibps: u32, unit: SpeedUnit) -> String {
     if enabled && kibps > 0 {
         format_limit_summary(kibps, unit)
     } else {
-        "Off".to_string()
+        app.global::<Translations>().invoke_off().to_string()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_switch_retranslates_existing_state_and_preserves_drafts() {
+        use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+        struct TestPlatform(Rc<MinimalSoftwareWindow>);
+        impl slint::platform::Platform for TestPlatform {
+            fn create_window_adapter(
+                &self,
+            ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+                Ok(self.0.clone())
+            }
+        }
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(TestPlatform(window.clone()))).unwrap();
+        let app = AppWindow::new().unwrap();
+        slint::select_bundled_translation("").unwrap();
+        let settings = AppSettings {
+            language: LanguagePreference::English,
+            global_rule: ProcessRule {
+                block_all: true,
+                download_loss_basis_points: Some(1250),
+                ..Default::default()
+            },
+            expanded: HashSet::from(["example.exe".to_string()]),
+            ..Default::default()
+        };
+        let state = Rc::new(RefCell::new(AppState::new(settings)));
+        {
+            let mut state = state.borrow_mut();
+            state.rows = vec![CoreProcessRow::global(state.global_rule.clone())];
+            state.selected = Some(RowSelection::Global);
+            state.loss_selection = state.selected.clone();
+            state.loss_download_draft = Some("101.25".to_string());
+            state.limit_editing = true;
+            state.process_search = "example.exe".to_string();
+            state.status = StatusMessage::SaveFailed("error 5".to_string());
+            publish_full_table(&app, &mut state);
+        }
+        update_selected_sidebar(&app, &state);
+        app.set_selected_dl_limit("123.45".into());
+        app.set_selected_dl_loss("101.25".into());
+        app.set_selected_sidebar_tab(0);
+        app.set_running(true);
+        let model = state.borrow().ui_rows.clone().unwrap();
+        let original_rule = state.borrow().global_rule.clone();
+        let tr = app.global::<Translations>();
+        assert_eq!(connections_summary(&app, 1), "1 TCP connection");
+        assert_eq!(connections_summary(&app, 2), "2 TCP connections");
+        assert!(change_language(&app, &state, 1));
+        assert_eq!(tr.invoke_off(), "关闭");
+        assert_eq!(connections_summary(&app, 1), "1 个 TCP 连接");
+        assert_eq!(connections_summary(&app, 2), "2 个 TCP 连接");
+        assert_eq!(
+            connections_summary(&app, 0),
+            tr.invoke_no_connections().to_string()
+        );
+        assert_eq!(
+            connections_summary(&app, 201),
+            tr.invoke_connections_shown("200".into(), "201".into())
+                .to_string()
+        );
+        assert_eq!(
+            app.get_status_text(),
+            tr.invoke_save_failed("error 5".into())
+        );
+        assert_eq!(app.get_selected_kind(), tr.invoke_computer());
+        assert_eq!(app.get_selected_dl_loss_error(), tr.invoke_loss_invalid());
+        assert_eq!(model.row_data(0).unwrap().dl_limit, tr.invoke_off());
+        assert!(change_language(&app, &state, 2));
+        assert_eq!(tr.invoke_off(), "Off");
+        assert_eq!(app.get_status_text(), "Failed to save settings: error 5");
+        assert_eq!(app.get_selected_kind(), "Computer");
+        assert_eq!(app.get_selected_dl_limit(), "123.45");
+        assert_eq!(app.get_selected_dl_loss(), "101.25");
+        assert_eq!(app.get_selected_sidebar_tab(), 0);
+        assert!(app.get_running());
+        let current = state.borrow();
+        assert_eq!(current.global_rule, original_rule);
+        assert_eq!(current.selected, Some(RowSelection::Global));
+        assert_eq!(current.loss_download_draft.as_deref(), Some("101.25"));
+        assert_eq!(current.process_search, "example.exe");
+        assert!(current.expanded.contains("example.exe"));
+        assert!(!current.engine.is_running());
+        assert!(Rc::ptr_eq(&model, current.ui_rows.as_ref().unwrap()));
+        drop(current);
+
+        if let Ok(output) = std::env::var("FLOWBRAKE_I18N_PREVIEW_DIR") {
+            std::fs::create_dir_all(&output).unwrap();
+            app.set_settings_open(true);
+            app.show().unwrap();
+            for (choice, locale) in [(1, "zh-CN"), (2, "en")] {
+                assert!(change_language(&app, &state, choice));
+                for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+                    window.dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
+                        scale_factor: scale,
+                    });
+                    for (width, height) in [(900, 500), (1180, 700)] {
+                        window.set_size(slint::LogicalSize::new(width as f32, height as f32));
+                        let size = window.size();
+                        let mut pixels =
+                            vec![slint::Rgb8Pixel::default(); (size.width * size.height) as usize];
+                        window.request_redraw();
+                        assert!(window.draw_if_needed(|renderer| {
+                            renderer.render(&mut pixels, size.width as usize);
+                        }));
+                        let mut ppm =
+                            format!("P6\n{} {}\n255\n", size.width, size.height).into_bytes();
+                        for pixel in pixels {
+                            ppm.extend_from_slice(&[pixel.r, pixel.g, pixel.b]);
+                        }
+                        let path = std::path::Path::new(&output)
+                            .join(format!("{locale}-{width}-{}.ppm", (scale * 100.0) as u32));
+                        std::fs::write(path, ppm).unwrap();
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn name_rule_refresh_preserves_child_loss_override_and_inherits_for_new_pid() {

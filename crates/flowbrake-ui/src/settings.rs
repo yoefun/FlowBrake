@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use flowbrake_core::ProcessRule;
 use slint::{LogicalPosition, LogicalSize, Window};
 
+use crate::i18n::LanguagePreference;
+
 pub const DEFAULT_WINDOW_WIDTH: f32 = 1180.0;
 pub const DEFAULT_WINDOW_HEIGHT: f32 = 700.0;
 pub const MIN_WINDOW_WIDTH: f32 = 900.0;
@@ -18,9 +20,11 @@ const WINDOW_X_KEY: &str = "window_x";
 const WINDOW_Y_KEY: &str = "window_y";
 const WINDOW_MAXIMIZED_KEY: &str = "window_maximized";
 const EXPANDED_KEY: &str = "expanded";
+const LANGUAGE_KEY: &str = "language";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppSettings {
+    pub language: LanguagePreference,
     pub speed_unit_bits: bool,
     pub ipv6_enabled: bool,
     pub window_width: f32,
@@ -36,6 +40,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            language: LanguagePreference::default(),
             speed_unit_bits: true,
             ipv6_enabled: true,
             window_width: DEFAULT_WINDOW_WIDTH,
@@ -59,6 +64,10 @@ impl AppSettings {
             return Self::default();
         };
 
+        Self::from_contents(&contents)
+    }
+
+    fn from_contents(contents: &str) -> Self {
         let mut settings = Self::default();
         let mut rule_entries: HashMap<String, HashMap<String, String>> = HashMap::new();
 
@@ -74,6 +83,9 @@ impl AppSettings {
             let value = value.trim();
 
             match key {
+                LANGUAGE_KEY => {
+                    settings.language = LanguagePreference::from_config(value);
+                }
                 SPEED_UNIT_BITS_KEY => {
                     settings.speed_unit_bits = parse_bool(value);
                 }
@@ -154,8 +166,13 @@ impl AppSettings {
             fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
 
+        fs::write(path, self.to_contents()).map_err(|err| err.to_string())
+    }
+
+    fn to_contents(&self) -> String {
         let mut lines = Vec::new();
         lines.push("# FlowBrake settings".to_string());
+        lines.push(format!("{LANGUAGE_KEY}={}", self.language.as_str()));
         lines.push(format!(
             "{SPEED_UNIT_BITS_KEY}={}",
             bool_text(self.speed_unit_bits)
@@ -188,7 +205,7 @@ impl AppSettings {
             }
         }
 
-        fs::write(path, lines.join("\n") + "\n").map_err(|err| err.to_string())
+        lines.join("\n") + "\n"
     }
 
     pub fn capture_window(&mut self, window: &Window) {
@@ -315,10 +332,50 @@ mod tests {
     #[test]
     fn defaults_to_isp_bit_units() {
         let settings = AppSettings::default();
+        assert_eq!(settings.language, LanguagePreference::System);
         assert!(settings.speed_unit_bits);
         assert!(settings.ipv6_enabled);
         assert_eq!(settings.window_width, DEFAULT_WINDOW_WIDTH);
         assert_eq!(settings.window_height, DEFAULT_WINDOW_HEIGHT);
+    }
+
+    #[test]
+    fn legacy_settings_and_invalid_language_preserve_existing_values() {
+        let legacy = "speed_unit_bits=false\nipv6_enabled=false\nwindow_width=1300\nwindow_height=800\nwindow_x=10\nwindow_y=20\nwindow_maximized=true\nexpanded=Browser\nglobal.block_all=true\nrule.browser.limit_download=true\nrule.browser.download_kbps=256\n";
+        let settings = AppSettings::from_contents(legacy);
+        assert_eq!(settings.language, LanguagePreference::System);
+        assert!(!settings.speed_unit_bits);
+        assert!(!settings.ipv6_enabled);
+        assert_eq!(settings.window_width, 1300.0);
+        assert_eq!(settings.window_height, 800.0);
+        assert_eq!(settings.window_x, 10.0);
+        assert_eq!(settings.window_y, 20.0);
+        assert!(settings.window_maximized);
+        assert!(settings.expanded.contains("browser"));
+        assert!(settings.global_rule.block_all);
+        assert_eq!(settings.name_rules["browser"].download_kbps, 256);
+        assert_eq!(
+            AppSettings::from_contents(&format!("{legacy}language=invalid\n")),
+            settings
+        );
+    }
+
+    #[test]
+    fn languages_round_trip_without_changing_rules_or_window_preferences() {
+        let mut settings = AppSettings::from_contents(
+            "speed_unit_bits=false\nipv6_enabled=false\nwindow_width=1400\nwindow_height=850\nwindow_x=12\nwindow_y=24\nwindow_maximized=true\nexpanded=browser,editor\nglobal.download_loss_basis_points=0\nrule.browser.limit_upload=true\nrule.browser.upload_kbps=512\nrule.browser.upload_loss_basis_points=125\n",
+        );
+        for preference in [
+            LanguagePreference::System,
+            LanguagePreference::SimplifiedChinese,
+            LanguagePreference::English,
+        ] {
+            settings.language = preference;
+            assert_eq!(
+                AppSettings::from_contents(&settings.to_contents()),
+                settings
+            );
+        }
     }
 
     #[test]

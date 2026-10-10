@@ -1,0 +1,192 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "0–100%, up to 2 decimals\n"
+msgstr ""
+
+msgid "ACTIONS"
+msgstr ""
+
+msgid "Adaptive"
+msgstr ""
+
+msgid "Administrator privileges are required to start the interceptor."
+msgstr ""
+
+msgid "All traffic"
+msgstr ""
+
+msgid "Blank or 0: off"
+msgstr ""
+
+msgid "Blank: use global; 0: off"
+msgstr ""
+
+msgid "Block"
+msgstr ""
+
+msgid "Block protection degraded: {}"
+msgstr ""
+
+msgid "Block traffic"
+msgstr ""
+
+msgid "Computer"
+msgstr ""
+
+msgid "Connections"
+msgstr ""
+
+msgid "Connections ({})"
+msgstr ""
+
+msgid "Could not change language: {}"
+msgstr ""
+
+msgid "Could not disconnect the TCP connection: {}"
+msgstr ""
+
+msgid "Could not disconnect {} TCP connections"
+msgstr ""
+
+msgid "Could not start the interceptor: {}"
+msgstr ""
+
+msgid "DL 0 b/s / UL 0 b/s"
+msgstr ""
+
+msgid "DL Limit KB/s"
+msgstr ""
+
+msgid "DL Limit Kb/s"
+msgstr ""
+
+msgid "DL Off / UL Off"
+msgstr ""
+
+msgid "DL Speed"
+msgstr ""
+
+msgid "DL {0} / UL {1}"
+msgstr ""
+
+msgid "Details"
+msgstr ""
+
+msgid "Disconnect"
+msgstr ""
+
+msgid "Disconnect all"
+msgstr ""
+
+msgid "Download"
+msgstr ""
+
+msgid "Download KB/s"
+msgstr ""
+
+msgid "Download Kb/s"
+msgstr ""
+
+msgid "Download loss %"
+msgstr ""
+
+msgid "Enter a percentage from 0 to 100 with at most two decimal places"
+msgstr ""
+
+msgid "Exit"
+msgstr ""
+
+msgid "Failed to save settings: {}"
+msgstr ""
+
+msgid "Follow system"
+msgstr ""
+
+msgid "IPv6 support"
+msgstr ""
+
+msgid "ISP units (Kb/s)"
+msgstr ""
+
+msgid "Interceptor running"
+msgstr ""
+
+msgid "Interceptor running   v {0}   ^ {1}   |   Packets: {2}   Block: {3}   Loss: {4} ({5}%)   Limit: {6}"
+msgstr ""
+
+msgid "Interceptor stopped"
+msgstr ""
+
+msgid "LIMITS"
+msgstr ""
+
+msgid "Language"
+msgstr ""
+
+msgid "Limit download"
+msgstr ""
+
+msgid "Limit upload"
+msgstr ""
+
+msgid "No active TCP connections"
+msgstr ""
+
+msgid "Off"
+msgstr ""
+
+msgid "Open FlowBrake"
+msgstr ""
+
+msgid "Process"
+msgstr ""
+
+msgid "Process group"
+msgstr ""
+
+msgid "Process instance"
+msgstr ""
+
+msgid "Row Type"
+msgstr ""
+
+msgid "Showing {0} of {1} TCP connections"
+msgstr ""
+
+msgid "Speed units"
+msgstr ""
+
+msgid "Standard units (KB/s)"
+msgstr ""
+
+msgid "UL Limit KB/s"
+msgstr ""
+
+msgid "UL Limit Kb/s"
+msgstr ""
+
+msgid "UL Speed"
+msgstr ""
+
+msgid "Upload"
+msgstr ""
+
+msgid "Upload KB/s"
+msgstr ""
+
+msgid "Upload Kb/s"
+msgstr ""
+
+msgid "Upload loss %"
+msgstr ""
+
+msgid "{n} TCP connection"
+msgid_plural "{n} TCP connections"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "{}   |   {}   |   Global {}   |   Limited {}   Blocked {}   Adaptive {}"
+msgstr ""

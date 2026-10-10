@@ -2,13 +2,18 @@ fn main() {
     println!("cargo:rerun-if-changed=ui/main.slint");
     println!("cargo:rerun-if-changed=ui/window_chrome.slint");
     println!("cargo:rerun-if-changed=ui/widgets.slint");
+    println!("cargo:rerun-if-changed=ui/translations.slint");
+    println!("cargo:rerun-if-changed=lang");
     println!("cargo:rerun-if-changed=../../assets/app.ico");
     println!("cargo:rerun-if-changed=../../third_party/windivert/WinDivert.dll");
     println!("cargo:rerun-if-changed=../../third_party/windivert/WinDivert64.sys");
 
     embed_windows_icon();
     embed_windows_manifest();
-    slint_build::compile("ui/main.slint").expect("failed to compile Slint UI");
+    let config = slint_build::CompilerConfiguration::new()
+        .with_bundled_translations("lang")
+        .with_default_translation_context(slint_build::DefaultTranslationContext::None);
+    slint_build::compile_with_config("ui/main.slint", config).expect("failed to compile Slint UI");
 
     copy_runtime_artifacts();
 }
