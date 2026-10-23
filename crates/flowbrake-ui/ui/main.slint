@@ -654,6 +654,10 @@ export component AppWindow inherits Window {
     in property <string> selected-dl-loss-error: "";
     in property <string> selected-ul-loss-error: "";
     in property <string> selected-loss-hint: "";
+    in property <string> selected-dl-delay: "";
+    in property <string> selected-ul-delay: "";
+    in property <string> selected-dl-delay-error: "";
+    in property <string> selected-ul-delay-error: "";
     in property <bool> selected-block: false;
     in property <bool> selected-adaptive: false;
     in property <bool> selected-show-connections: false;
@@ -683,9 +687,11 @@ export component AppWindow inherits Window {
     property <length> sidebar-tab-slot-width: 130px;
     property <length> sidebar-details-bottom-padding: 24px;
     property <length> sidebar-details-scroll-height:
-        (root.selected-show-connections ? 616px : 582px)
+        (root.selected-show-connections ? 762px : 728px)
             + (root.selected-dl-loss-error != "" ? 30px : 0px)
             + (root.selected-ul-loss-error != "" ? 30px : 0px)
+            + (root.selected-dl-delay-error != "" ? 30px : 0px)
+            + (root.selected-ul-delay-error != "" ? 30px : 0px)
             + root.sidebar-details-bottom-padding;
     property <length> sidebar-connections-viewport-height:
         24px + root.selected-connections.length * 42px + root.sidebar-details-bottom-padding;
@@ -703,6 +709,7 @@ export component AppWindow inherits Window {
     callback row-limit-focus-changed(bool);
     callback selected-limit-submitted(string, string);
     callback selected-loss-submitted(string, string);
+    callback selected-delay-submitted(string, string);
     callback selected-bool-rule-edited(string, bool);
     callback sidebar-focus-changed(bool);
     callback speed-unit-bits-changed(bool);
@@ -1033,6 +1040,29 @@ export component AppWindow inherits Window {
                                     height: 32px;
                                 }
 
+                                SidebarInput {
+                                    label: @tr("Download delay ms");
+                                    value: root.selected-dl-delay;
+                                    error: root.selected-dl-delay-error;
+                                    submitted(value) => { root.selected-delay-submitted("dl", value); }
+                                    focus-changed(value) => { root.sidebar-focus-changed(value); }
+                                }
+
+                                SidebarInput {
+                                    label: @tr("Upload delay ms");
+                                    value: root.selected-ul-delay;
+                                    error: root.selected-ul-delay-error;
+                                    submitted(value) => { root.selected-delay-submitted("ul", value); }
+                                    focus-changed(value) => { root.sidebar-focus-changed(value); }
+                                }
+
+                                Text {
+                                    text: @tr("0–5000 ms, one direction\n") + root.selected-loss-hint;
+                                    color: #65758b;
+                                    font-size: 11px;
+                                    height: 32px;
+                                }
+
                                 Rectangle { height: 1px; background: #e2e8f0; }
 
                                 SidebarLabel { text: @tr("ACTIONS"); }
@@ -1115,7 +1145,7 @@ export component AppWindow inherits Window {
         }
 
         Rectangle {
-            height: 30px;
+            height: max(30px, status-label.preferred-height + 12px);
             background: #ffffff;
             border-color: #dfe4ec;
             border-width: 1px;
@@ -1127,16 +1157,16 @@ export component AppWindow inherits Window {
                 }
             }
 
-            Text {
+            status-label := Text {
                 x: 12px;
+                y: 6px;
                 width: parent.width - 24px;
-                height: parent.height;
                 text: @tr("{}   |   {}   |   Global {}   |   Limited {}   Blocked {}   Adaptive {}", root.status-text, root.summary-throughput, root.summary-global-limit, root.summary-process-limits, root.summary-blocked, root.summary-adaptive);
                 color: root.running ? #167454 : #596579;
                 font-size: 12px;
                 vertical-alignment: center;
                 horizontal-alignment: left;
-                overflow: elide;
+                wrap: word-wrap;
             }
         }
         }

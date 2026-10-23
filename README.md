@@ -18,6 +18,7 @@ implementation and generated .NET publish artifacts have been removed.
 - Global download and upload limits for all traffic
 - Process grouping by executable name, with optional per-PID expansion
 - Block-all switches for global or per-process traffic
+- Independent download/upload packet-loss and fixed one-way delay simulation
 - Adaptive mode that adjusts token-bucket rates toward the configured target
 - Live rolling speed display with a status-bar summary of throughput and active rules
 - TCP connection list in the detail sidebar, with per-connection and bulk disconnect (IPv4)
@@ -42,9 +43,9 @@ Requirements:
 - Rust stable toolchain with the MSVC target
 - Visual Studio Build Tools / Windows SDK, including `link.exe` and `rc.exe`
 
-IPv4 TCP/UDP traffic is always intercepted. IPv6 support is optional and can be
-toggled in Settings. When IPv6 is disabled, IPv6 packets are passed through
-unchanged.
+IPv4 TCP/UDP traffic is always intercepted. The Settings IPv6 switch controls
+IPv6 statistics and speed limiting; Block, loss and delay remain independently
+active for IPv6.
 
 ## Repository Layout
 
@@ -188,7 +189,8 @@ leave the input. Invalid input displays an error and leaves the active rule unch
 - `100` creates a packet blackhole; it does not install Socket Block filters.
   Connection attempts can remain pending until timeout.
 
-The order is Block, simulated loss, then speed limiting. Simulated drops do not
+The order is Block, simulated loss, speed-limit admission, delay, then a final
+Block check before reinjection. Simulated drops do not
 consume token-bucket budget. The status bar separates packet drops caused by
 Block, Loss, and Limit. The displayed loss percentage is the cumulative ratio of
 simulated drops to packets sampled by active nonzero loss rules since the engine
@@ -206,6 +208,58 @@ post-loss throughput; disable Adaptive when testing loss alone.
 
 Global and executable-name group loss rules are saved with existing settings.
 Individual PID overrides last for the current session, like PID speed limits.
+
+## Packet Delay Simulation
+
+In the existing Details sidebar, set **Download delay ms** and **Upload delay ms**
+independently to whole milliseconds from `0` to `5000`. Enter or leaving the input
+applies the value; invalid input keeps the active rule and saved settings unchanged.
+There is no extra speed-limit checkbox to enable delay.
+
+- A blank process value inherits the global delay for that direction; explicit
+  `0` overrides it off. A blank or `0` global value adds no delay. Process values
+  replace global values, rather than adding to them.
+- Editing a group updates all its current PIDs and saves an executable-name
+  template. Newly discovered PIDs without an existing PID rule copy that template;
+  existing PID overrides remain intact. PID overrides are session-only, not a
+  third live inheritance layer.
+- Delay covers parsed external IPv4/IPv6 TCP/UDP, including empty TCP control
+  packets. It is independent of the IPv6 statistics/limiting switch. Loopback
+  is preserved. ICMP/ping delay is not supported. Unknown PIDs use only global delay;
+  existing endpoint-to-PID attribution limitations still apply.
+- Values are **one-way**, not RTT. Download and upload at `100 ms` each add about
+  `200 ms` to a single request/response RTT without retransmission or overload.
+
+Only packets needing to wait are queued, with ordering preserved within each
+directional flow. This is not a new bandwidth shaper: existing speed limiting
+still admits or drops packets, and loss/limit admission is not repeated at send time.
+Queue capacity includes packets currently in flight to the sender: at most
+**64 MiB / 16384 packets globally**, and **8 MiB / 4096 packets per PID**;
+unattributed traffic has its own shared quota. Either limit rejects new packets.
+These are raw packet-data limits, not an application RSS cap. High throughput or
+long delays can cause additional queue-overflow drops.
+
+The status bar preserves Block/Loss/Limit counters and separately shows cumulative
+delayed packets, current queued packets/raw bytes, overflow drops, send failures,
+shutdown discards, engine errors, and Block protection degradation.
+Changing a nonzero delay affects new packets; queued packets retain their deadlines.
+Setting the effective delay to zero or clearing a rule releases applicable backlog
+in order. Normal Stop/Exit stops capture, cancels extra waiting and flushes captured
+packets before closing the driver; current Block rules are still checked before send.
+Failures are reported rather than counted as successful delivery. Restart clears
+queue/counters, not saved rules.
+
+The opt-in live delay test requires administrator PowerShell and a controlled,
+non-loopback TCP server that echoes received bytes unchanged:
+
+```powershell
+$env:FLOWBRAKE_DELAY_TEST_ENDPOINT = "<external_IP>:<TCP_port>"
+cargo test -p flowbrake-windows live_process_delay -- --ignored --nocapture
+```
+
+It checks TCP RTT and stopping with delayed traffic. Live RTT, stop recovery and
+driver behavior remain unverified in the current non-elevated environment without
+an echo endpoint; unit tests do not establish those results.
 
 ## Settings and Persistence
 
@@ -240,9 +294,14 @@ The file is a simple `key=value` format and persists:
 - Global limit, block, and adaptive settings
 - Per-process rules keyed by executable name
 - Download/upload simulated packet-loss overrides, including explicit 0% values
+- Download/upload delay overrides (`download_delay_ms` / `upload_delay_ms`),
+  including explicit `0`; missing or invalid values mean no override
 
 Rules are restored when matching processes appear again. Settings are saved when
 the window is closed, minimized to tray, or when relevant preferences change.
+Delay fields use existing `global.<field>` and `rule.<executable-name>.<field>` keys;
+executable names containing dots round-trip unchanged. Back up `settings.ini`
+before downgrading: older versions ignore and may discard delay fields when saving.
 
 ## How Limiting Works
 
@@ -258,8 +317,8 @@ Important details:
 - Internal limits are stored in KiB/s regardless of the displayed unit.
 
 Because this is a drop-based limiter, very low limits can still cause TCP
-timeouts or degraded connections. A delay/queue-based limiter would be more
-connection-friendly, but is not implemented yet.
+timeouts or degraded connections. Fixed packet-delay simulation does not replace
+this with a queue-based speed shaper.
 
 ## Testing
 

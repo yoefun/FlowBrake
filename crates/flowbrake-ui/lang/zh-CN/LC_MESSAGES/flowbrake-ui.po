@@ -115,8 +115,8 @@ msgstr "运营商单位 (Kb/s)"
 msgid "Interceptor running"
 msgstr "拦截器运行中"
 
-msgid "Interceptor running   v {0}   ^ {1}   |   Packets: {2}   Block: {3}   Loss: {4} ({5}%)   Limit: {6}"
-msgstr "拦截器运行中   v {0}   ^ {1}   |   数据包：{2}   阻断：{3}   丢包：{4} ({5}%)   限速：{6}"
+msgid "{7}   v {0}   ^ {1}   |   Packets: {2}   Block: {3}   Loss: {4} ({5}%)   Limit: {6}"
+msgstr "{7}   v {0}   ^ {1}   |   数据包：{2}   阻断：{3}   丢包：{4} ({5}%)   限速：{6}"
 
 msgid "Interceptor stopped"
 msgstr "拦截器已停止"
@@ -190,3 +190,21 @@ msgstr[0] "{n} 个 TCP 连接"
 
 msgid "{}   |   {}   |   Global {}   |   Limited {}   Blocked {}   Adaptive {}"
 msgstr "{}   |   {}   |   全局 {}   |   限速 {}   阻断 {}   自适应 {}"
+
+msgid "Download delay ms"
+msgstr "下载延迟 ms"
+
+msgid "Upload delay ms"
+msgstr "上传延迟 ms"
+
+msgid "0–5000 ms, one direction\n"
+msgstr "0–5000 ms，单向延迟\n"
+
+msgid "Enter whole milliseconds from 0 to 5000"
+msgstr "请输入 0 到 5000 的整数毫秒值"
+
+msgid "Delay: {0}   Queue: {1} / {2} B   Overflow: {3}   Send failed: {4}   Shutdown dropped: {5}"
+msgstr "延迟：{0}   队列：{1} / {2} B   溢出：{3}   发送失败：{4}   停止弃包：{5}"
+
+msgid "Interceptor error: {}"
+msgstr "拦截器错误：{}"

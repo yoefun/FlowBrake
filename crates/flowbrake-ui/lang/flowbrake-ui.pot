@@ -114,7 +114,7 @@ msgstr ""
 msgid "Interceptor running"
 msgstr ""
 
-msgid "Interceptor running   v {0}   ^ {1}   |   Packets: {2}   Block: {3}   Loss: {4} ({5}%)   Limit: {6}"
+msgid "{7}   v {0}   ^ {1}   |   Packets: {2}   Block: {3}   Loss: {4} ({5}%)   Limit: {6}"
 msgstr ""
 
 msgid "Interceptor stopped"
@@ -189,4 +189,22 @@ msgstr[0] ""
 msgstr[1] ""
 
 msgid "{}   |   {}   |   Global {}   |   Limited {}   Blocked {}   Adaptive {}"
+msgstr ""
+
+msgid "Download delay ms"
+msgstr ""
+
+msgid "Upload delay ms"
+msgstr ""
+
+msgid "0–5000 ms, one direction\n"
+msgstr ""
+
+msgid "Enter whole milliseconds from 0 to 5000"
+msgstr ""
+
+msgid "Delay: {0}   Queue: {1} / {2} B   Overflow: {3}   Send failed: {4}   Shutdown dropped: {5}"
+msgstr ""
+
+msgid "Interceptor error: {}"
 msgstr ""

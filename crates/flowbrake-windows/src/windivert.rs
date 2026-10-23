@@ -14,15 +14,17 @@ const WINDIVERT_FLAG_RECV_ONLY: u64 = 0x0004;
 const WINDIVERT_FLAG_LOOPBACK: u32 = 0x0004_0000;
 const WINDIVERT_FLAG_IPV6: u32 = 0x0010_0000;
 const WINDIVERT_FLAG_OUTBOUND: u32 = 0x0002_0000;
+const WINDIVERT_SHUTDOWN_RECV: i32 = 1;
 
 type WinDivertOpenFn = unsafe extern "C" fn(*const c_char, i32, i16, u64) -> *mut c_void;
 type WinDivertRecvFn =
-    unsafe extern "C" fn(*mut c_void, *mut c_void, u32, *mut u32, *mut WinDivertAddress) -> bool;
+    unsafe extern "C" fn(*mut c_void, *mut c_void, u32, *mut u32, *mut WinDivertAddress) -> i32;
 type WinDivertSendFn =
-    unsafe extern "C" fn(*mut c_void, *const c_void, u32, *mut u32, *mut WinDivertAddress) -> bool;
-type WinDivertCloseFn = unsafe extern "C" fn(*mut c_void) -> bool;
+    unsafe extern "C" fn(*mut c_void, *const c_void, u32, *mut u32, *mut WinDivertAddress) -> i32;
+type WinDivertShutdownFn = unsafe extern "C" fn(*mut c_void, i32) -> i32;
+type WinDivertCloseFn = unsafe extern "C" fn(*mut c_void) -> i32;
 type WinDivertCalcChecksumsFn =
-    unsafe extern "C" fn(*mut c_void, u32, *mut WinDivertAddress, u64) -> bool;
+    unsafe extern "C" fn(*mut c_void, u32, *mut WinDivertAddress, u64) -> i32;
 
 #[derive(Debug, Error)]
 pub enum WinDivertError {
@@ -143,61 +145,88 @@ impl WinDivert {
     }
 
     pub fn recv(&self, packet: &mut [u8]) -> Option<(usize, WinDivertAddress)> {
-        let handle = self.inner.handle.load(Ordering::Acquire);
-        if handle.is_null() {
-            return None;
-        }
+        self.recv_result(packet).ok()
+    }
+
+    pub fn recv_result(&self, packet: &mut [u8]) -> io::Result<(usize, WinDivertAddress)> {
+        let handle = self.inner.valid_handle()?;
+        let packet_len = u32::try_from(packet.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "packet buffer exceeds u32")
+        })?;
         let recv: libloading::Symbol<WinDivertRecvFn> =
-            unsafe { self.inner.library.get(b"WinDivertRecv").ok()? };
+            unsafe { self.inner.library.get(b"WinDivertRecv") }.map_err(io::Error::other)?;
         let mut read_len = 0u32;
         let mut address = WinDivertAddress::default();
         let ok = unsafe {
             recv(
                 handle,
                 packet.as_mut_ptr().cast(),
-                packet.len() as u32,
+                packet_len,
                 &mut read_len,
                 &mut address,
             )
         };
-        ok.then_some((read_len as usize, address))
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if read_len > packet_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "WinDivertRecv returned a length larger than the packet buffer",
+            ));
+        }
+        Ok((read_len as usize, address))
     }
 
     pub fn send(&self, packet: &[u8], address: &mut WinDivertAddress) -> bool {
-        let handle = self.inner.handle.load(Ordering::Acquire);
-        if handle.is_null() {
-            return false;
-        }
+        self.send_result(packet, address).is_ok()
+    }
+
+    pub fn send_result(&self, packet: &[u8], address: &mut WinDivertAddress) -> io::Result<()> {
+        let handle = self.inner.valid_handle()?;
+        let packet_len = u32::try_from(packet.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "packet length exceeds u32")
+        })?;
         let calc: libloading::Symbol<WinDivertCalcChecksumsFn> =
-            match unsafe { self.inner.library.get(b"WinDivertHelperCalcChecksums") } {
-                Ok(calc) => calc,
-                Err(_) => return false,
-            };
+            unsafe { self.inner.library.get(b"WinDivertHelperCalcChecksums") }
+                .map_err(io::Error::other)?;
         let send: libloading::Symbol<WinDivertSendFn> =
-            match unsafe { self.inner.library.get(b"WinDivertSend") } {
-                Ok(send) => send,
-                Err(_) => return false,
-            };
+            unsafe { self.inner.library.get(b"WinDivertSend") }.map_err(io::Error::other)?;
 
         unsafe {
-            let _ = calc(
-                packet.as_ptr() as *mut c_void,
-                packet.len() as u32,
-                address,
-                0,
-            );
+            let _ = calc(packet.as_ptr() as *mut c_void, packet_len, address, 0);
         }
 
         let mut send_len = 0u32;
-        unsafe {
+        let ok = unsafe {
             send(
                 handle,
                 packet.as_ptr().cast(),
-                packet.len() as u32,
+                packet_len,
                 &mut send_len,
                 address,
             )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
         }
+        if send_len != packet_len {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                format!("WinDivertSend sent {send_len} of {packet_len} bytes"),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn shutdown_recv(&self) -> io::Result<()> {
+        let handle = self.inner.valid_handle()?;
+        let shutdown: libloading::Symbol<WinDivertShutdownFn> =
+            unsafe { self.inner.library.get(b"WinDivertShutdown") }.map_err(io::Error::other)?;
+        if unsafe { shutdown(handle, WINDIVERT_SHUTDOWN_RECV) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     pub fn expected_paths(exe_dir: impl AsRef<Path>) -> (PathBuf, PathBuf) {
@@ -214,6 +243,14 @@ impl WinDivert {
 }
 
 impl WinDivertInner {
+    fn valid_handle(&self) -> io::Result<*mut c_void> {
+        let handle = self.handle.load(Ordering::Acquire);
+        if handle.is_null() || handle == (-1isize) as *mut c_void {
+            return Err(io::Error::from_raw_os_error(6));
+        }
+        Ok(handle)
+    }
+
     fn close(&self) {
         let handle = self.handle.swap(std::ptr::null_mut(), Ordering::AcqRel);
         if handle.is_null() {
@@ -247,5 +284,33 @@ mod tests {
         let (dll, sys) = WinDivert::expected_paths("C:/tmp/app");
         assert!(dll.ends_with("WinDivert.dll"));
         assert!(sys.ends_with("WinDivert64.sys"));
+    }
+
+    #[test]
+    fn closed_and_invalid_handles_report_windows_invalid_handle() {
+        for handle in [std::ptr::null_mut(), (-1isize) as *mut c_void] {
+            let divert = WinDivert {
+                inner: Arc::new(WinDivertInner {
+                    library: unsafe { Library::new("kernel32.dll").unwrap() },
+                    handle: AtomicPtr::new(handle),
+                }),
+            };
+            let mut packet = [0u8; 40];
+            let mut address = WinDivertAddress::default();
+            assert_eq!(
+                divert.recv_result(&mut packet).unwrap_err().raw_os_error(),
+                Some(6)
+            );
+            assert_eq!(
+                divert
+                    .send_result(&packet, &mut address)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(6)
+            );
+            assert_eq!(divert.shutdown_recv().unwrap_err().raw_os_error(), Some(6));
+            assert!(divert.recv(&mut packet).is_none());
+            assert!(!divert.send(&packet, &mut address));
+        }
     }
 }

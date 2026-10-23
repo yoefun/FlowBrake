@@ -1,4 +1,5 @@
 use flowbrake_core::Direction;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Protocol {
@@ -6,8 +7,19 @@ pub enum Protocol {
     Udp,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct FlowKey {
+    pub source: IpAddr,
+    pub destination: IpAddr,
+    pub protocol: Protocol,
+    pub source_port: u16,
+    pub destination_port: u16,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpPacket {
+    pub source: IpAddr,
+    pub destination: IpAddr,
     pub protocol: Protocol,
     pub source_port: u16,
     pub destination_port: u16,
@@ -18,6 +30,16 @@ pub struct IpPacket {
 pub type Ipv4Packet = IpPacket;
 
 impl IpPacket {
+    pub fn flow_key(self) -> FlowKey {
+        FlowKey {
+            source: self.source,
+            destination: self.destination,
+            protocol: self.protocol,
+            source_port: self.source_port,
+            destination_port: self.destination_port,
+        }
+    }
+
     pub fn parse(packet: &[u8], is_ipv6: bool) -> Option<Self> {
         if is_ipv6 {
             parse_ipv6(packet)
@@ -60,6 +82,8 @@ fn parse_ipv4(packet: &[u8]) -> Option<IpPacket> {
     let transport_header_len = transport_header_len(protocol, packet, ihl, total_len)?;
 
     Some(IpPacket {
+        source: Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]).into(),
+        destination: Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]).into(),
         protocol,
         source_port,
         destination_port,
@@ -98,6 +122,8 @@ fn parse_ipv6(packet: &[u8]) -> Option<IpPacket> {
     let transport_header_len = transport_header_len(protocol, packet, transport_offset, total_len)?;
 
     Some(IpPacket {
+        source: Ipv6Addr::from(<[u8; 16]>::try_from(&packet[8..24]).ok()?).into(),
+        destination: Ipv6Addr::from(<[u8; 16]>::try_from(&packet[24..40]).ok()?).into(),
         protocol,
         source_port,
         destination_port,
@@ -170,6 +196,8 @@ mod tests {
         packet[0] = 0x45;
         packet[2..4].copy_from_slice(&40u16.to_be_bytes());
         packet[9] = 6;
+        packet[12..16].copy_from_slice(&[192, 0, 2, 1]);
+        packet[16..20].copy_from_slice(&[198, 51, 100, 2]);
         packet[32] = 0x50;
         packet[20..22].copy_from_slice(&1234u16.to_be_bytes());
         packet[22..24].copy_from_slice(&443u16.to_be_bytes());
@@ -179,6 +207,16 @@ mod tests {
         assert_eq!(parsed.local_port(Direction::Upload), 1234);
         assert_eq!(parsed.local_port(Direction::Download), 443);
         assert_eq!(parsed.payload_len, 0);
+        assert_eq!(
+            parsed.flow_key(),
+            FlowKey {
+                source: Ipv4Addr::new(192, 0, 2, 1).into(),
+                destination: Ipv4Addr::new(198, 51, 100, 2).into(),
+                protocol: Protocol::Tcp,
+                source_port: 1234,
+                destination_port: 443,
+            }
+        );
     }
 
     #[test]
@@ -213,6 +251,8 @@ mod tests {
         packet[0] = 0x60;
         packet[4..6].copy_from_slice(&20u16.to_be_bytes());
         packet[6] = 6;
+        packet[8..24].copy_from_slice(&Ipv6Addr::LOCALHOST.octets());
+        packet[24..40].copy_from_slice(&Ipv6Addr::UNSPECIFIED.octets());
         packet[52] = 0x50;
         packet[40..42].copy_from_slice(&4321u16.to_be_bytes());
         packet[42..44].copy_from_slice(&443u16.to_be_bytes());
@@ -222,6 +262,11 @@ mod tests {
         assert_eq!(parsed.local_port(Direction::Upload), 4321);
         assert_eq!(parsed.local_port(Direction::Download), 443);
         assert_eq!(parsed.payload_len, 0);
+        assert_eq!(parsed.flow_key().source, IpAddr::V6(Ipv6Addr::LOCALHOST));
+        assert_eq!(
+            parsed.flow_key().destination,
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        );
     }
 
     #[test]
@@ -238,5 +283,71 @@ mod tests {
         assert_eq!(parsed.protocol, Protocol::Udp);
         assert_eq!(parsed.local_port(Direction::Upload), 2222);
         assert_eq!(parsed.payload_len, 4);
+    }
+
+    #[test]
+    fn flow_key_distinguishes_endpoints_protocol_and_family() {
+        let key = FlowKey {
+            source: Ipv4Addr::LOCALHOST.into(),
+            destination: Ipv4Addr::UNSPECIFIED.into(),
+            protocol: Protocol::Tcp,
+            source_port: 1234,
+            destination_port: 443,
+        };
+        let alternatives = [
+            FlowKey {
+                source: Ipv4Addr::new(127, 0, 0, 2).into(),
+                ..key
+            },
+            FlowKey {
+                destination: Ipv4Addr::LOCALHOST.into(),
+                ..key
+            },
+            FlowKey {
+                protocol: Protocol::Udp,
+                ..key
+            },
+            FlowKey {
+                source_port: 4321,
+                ..key
+            },
+            FlowKey {
+                destination_port: 80,
+                ..key
+            },
+            FlowKey {
+                source: Ipv4Addr::LOCALHOST.to_ipv6_mapped().into(),
+                destination: Ipv4Addr::UNSPECIFIED.to_ipv6_mapped().into(),
+                ..key
+            },
+        ];
+        let mut keys = std::collections::HashSet::from([key]);
+        for alternative in alternatives {
+            assert!(keys.insert(alternative));
+        }
+    }
+
+    #[test]
+    fn rejects_truncated_ip_and_transport_headers() {
+        for is_ipv6 in [false, true] {
+            let mut packet = vec![0u8; if is_ipv6 { 60 } else { 40 }];
+            if is_ipv6 {
+                packet[0] = 0x60;
+                packet[4..6].copy_from_slice(&20u16.to_be_bytes());
+                packet[6] = 6;
+                packet[52] = 0x50;
+            } else {
+                packet[0] = 0x45;
+                packet[2..4].copy_from_slice(&40u16.to_be_bytes());
+                packet[9] = 6;
+                packet[32] = 0x50;
+            }
+            for length in 0..packet.len() {
+                assert!(IpPacket::parse(&packet[..length], is_ipv6).is_none());
+            }
+            let tcp_offset = if is_ipv6 { 40 } else { 20 };
+            packet[tcp_offset + 12] = 0x40;
+            assert!(IpPacket::parse(&packet, is_ipv6).is_none());
+        }
     }
 }

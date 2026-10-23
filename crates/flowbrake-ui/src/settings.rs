@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
-use flowbrake_core::ProcessRule;
+use flowbrake_core::{ProcessRule, parse_delay_ms};
 use slint::{LogicalPosition, LogicalSize, Window};
 
 use crate::i18n::LanguagePreference;
@@ -132,7 +132,7 @@ impl AppSettings {
                 }
                 _ if key.starts_with("rule.") => {
                     let remainder = key.strip_prefix("rule.").unwrap_or_default();
-                    let Some((name, field)) = remainder.split_once('.') else {
+                    let Some((name, field)) = remainder.rsplit_once('.') else {
                         continue;
                     };
                     let name = name.trim().to_lowercase();
@@ -295,6 +295,12 @@ fn parse_rule_fields(fields: &HashMap<String, String>) -> ProcessRule {
             .get("upload_loss_basis_points")
             .and_then(|value| value.parse::<u16>().ok())
             .filter(|value| *value <= 10_000),
+        download_delay_ms: fields
+            .get("download_delay_ms")
+            .and_then(|value| parse_delay_ms(value).ok().flatten()),
+        upload_delay_ms: fields
+            .get("upload_delay_ms")
+            .and_then(|value| parse_delay_ms(value).ok().flatten()),
         adjusted_dl_bps: 0.0,
         adjusted_ul_bps: 0.0,
     }
@@ -322,6 +328,12 @@ fn append_rule_lines(lines: &mut Vec<String>, prefix: &str, rule: &ProcessRule) 
     }
     if let Some(value) = rule.upload_loss_basis_points {
         lines.push(format!("{prefix}.upload_loss_basis_points={value}"));
+    }
+    if let Some(value) = rule.download_delay_ms {
+        lines.push(format!("{prefix}.download_delay_ms={value}"));
+    }
+    if let Some(value) = rule.upload_delay_ms {
+        lines.push(format!("{prefix}.upload_delay_ms={value}"));
     }
 }
 
@@ -389,6 +401,8 @@ mod tests {
         assert_eq!(rule.adjusted_dl_bps, 0.0);
         assert_eq!(rule.download_loss_basis_points, None);
         assert_eq!(rule.upload_loss_basis_points, None);
+        assert_eq!(rule.download_delay_ms, None);
+        assert_eq!(rule.upload_delay_ms, None);
     }
 
     #[test]
@@ -414,6 +428,35 @@ mod tests {
     }
 
     #[test]
+    fn dotted_executable_names_round_trip_all_rule_fields() {
+        let rule = ProcessRule {
+            block_all: true,
+            limit_download: true,
+            download_kbps: 256,
+            limit_upload: true,
+            upload_kbps: 512,
+            adaptive: true,
+            download_loss_basis_points: Some(0),
+            upload_loss_basis_points: Some(125),
+            download_delay_ms: Some(0),
+            upload_delay_ms: Some(5000),
+            ..Default::default()
+        };
+        let settings = AppSettings {
+            global_rule: rule.clone(),
+            name_rules: HashMap::from([
+                ("example.exe".to_string(), rule.clone()),
+                ("example.worker.v2.exe".to_string(), rule),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            AppSettings::from_contents(&settings.to_contents()),
+            settings
+        );
+    }
+
+    #[test]
     fn invalid_saved_loss_values_do_not_enable_loss() {
         for value in ["-1", "10001", "65536", "1.5", "invalid", ""] {
             let fields = HashMap::from([
@@ -423,6 +466,42 @@ mod tests {
             let rule = parse_rule_fields(&fields);
             assert_eq!(rule.download_loss_basis_points, None);
             assert_eq!(rule.upload_loss_basis_points, None);
+        }
+    }
+
+    #[test]
+    fn delay_settings_preserve_legacy_defaults_and_explicit_zero() {
+        let legacy = AppSettings::from_contents(
+            "global.limit_download=true\nglobal.download_kbps=256\nrule.browser.block_all=true\n",
+        );
+        assert_eq!(legacy.global_rule.download_delay_ms, None);
+        assert_eq!(legacy.name_rules["browser"].upload_delay_ms, None);
+        let settings = AppSettings::from_contents(
+            "global.download_delay_ms=100\nglobal.upload_delay_ms=0\nrule.browser.download_delay_ms=0\nrule.browser.upload_delay_ms=5000\n",
+        );
+        assert_eq!(settings.global_rule.download_delay_ms, Some(100));
+        assert_eq!(settings.global_rule.upload_delay_ms, Some(0));
+        assert_eq!(settings.name_rules["browser"].download_delay_ms, Some(0));
+        assert_eq!(settings.name_rules["browser"].upload_delay_ms, Some(5000));
+        let contents = settings.to_contents();
+        assert!(contents.contains("rule.browser.download_delay_ms=0\n"));
+        assert_eq!(AppSettings::from_contents(&contents), settings);
+        assert!(!legacy.to_contents().contains("_delay_ms="));
+    }
+
+    #[test]
+    fn invalid_saved_delays_do_not_enable_delay_or_remove_other_rules() {
+        for value in ["-1", "+1", "5001", "4294967296", "1.5", "1e2", "1ms", ""] {
+            let settings = AppSettings::from_contents(&format!(
+                "global.download_delay_ms={value}\nglobal.upload_delay_ms={value}\nrule.browser.download_delay_ms={value}\nrule.browser.block_all=true\n",
+            ));
+            assert_eq!(settings.global_rule.download_delay_ms, None, "{value}");
+            assert_eq!(settings.global_rule.upload_delay_ms, None, "{value}");
+            assert_eq!(
+                settings.name_rules["browser"].download_delay_ms, None,
+                "{value}"
+            );
+            assert!(settings.name_rules["browser"].block_all);
         }
     }
 }

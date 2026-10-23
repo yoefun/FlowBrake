@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use flowbrake_core::{
     Direction, GlobalRule, ProcessRow as CoreProcessRow, ProcessRule, RollingAverage, RowKind,
     SortColumn, SortDirection, SpeedUnit, TcpConnection, TcpConnectionKey, build_process_rows,
-    compute_adaptive_rate, format_limit_kibps, format_limit_summary, format_loss_percent,
-    format_speed, parse_limit_input, parse_loss_percent,
+    compute_adaptive_rate, format_delay_ms, format_limit_kibps, format_limit_summary,
+    format_loss_percent, format_speed, parse_delay_ms, parse_limit_input, parse_loss_percent,
 };
 use flowbrake_windows::{
     EngineCommand, NetworkEngine, ProcessMetadataCache, RelaunchResult, close_tcp_connection,
@@ -60,6 +60,8 @@ struct AppState {
     loss_selection: Option<RowSelection>,
     loss_download_draft: Option<String>,
     loss_upload_draft: Option<String>,
+    delay_download_draft: Option<String>,
+    delay_upload_draft: Option<String>,
     selected: Option<RowSelection>,
     speed_unit: SpeedUnit,
     ipv6_enabled: bool,
@@ -121,6 +123,8 @@ impl AppState {
             loss_selection: None,
             loss_download_draft: None,
             loss_upload_draft: None,
+            delay_download_draft: None,
+            delay_upload_draft: None,
             selected: None,
             speed_unit: SpeedUnit::from_bits_mode(settings.speed_unit_bits),
             ipv6_enabled: settings.ipv6_enabled,
@@ -464,6 +468,35 @@ impl AppState {
         true
     }
 
+    fn edit_selected_delay(&mut self, direction: &str, text: &str) -> bool {
+        let Some(row) = self.selected_row().cloned() else {
+            return false;
+        };
+        let draft = match direction {
+            "dl" => &mut self.delay_download_draft,
+            "ul" => &mut self.delay_upload_draft,
+            _ => return false,
+        };
+        let value = match parse_delay_ms(text) {
+            Ok(value) => {
+                *draft = None;
+                value
+            }
+            Err(_) => {
+                *draft = Some(text.to_string());
+                return false;
+            }
+        };
+        let mut rule = row.rule;
+        match direction {
+            "dl" => rule.download_delay_ms = value,
+            "ul" => rule.upload_delay_ms = value,
+            _ => unreachable!(),
+        }
+        self.apply_rule_to_row(&row.kind, rule);
+        true
+    }
+
     fn tick(&mut self) -> bool {
         let snapshot = self.engine.snapshot_and_reset();
         let seen_pids: HashSet<u32> = snapshot.per_pid.keys().copied().collect();
@@ -515,28 +548,27 @@ impl AppState {
             self.run_adaptive_feedback();
         }
 
-        self.status = if let Some(error) = snapshot.block_error {
-            StatusMessage::BlockDegraded(error)
-        } else if snapshot.running {
-            StatusMessage::Running {
-                download: format_speed(self.global_dl_bps, self.speed_unit),
-                upload: format_speed(self.global_ul_bps, self.speed_unit),
-                packets: snapshot.packets_processed.to_string(),
-                blocked: snapshot.packets_blocked.to_string(),
-                lost: snapshot.packets_loss_dropped.to_string(),
-                loss_percent: format!(
-                    "{:.2}",
-                    if snapshot.packets_loss_eligible == 0 {
-                        0.0
-                    } else {
-                        snapshot.packets_loss_dropped as f64 * 100.0
-                            / snapshot.packets_loss_eligible as f64
-                    }
-                ),
-                limited: snapshot.packets_rate_dropped.to_string(),
-            }
-        } else {
-            StatusMessage::Stopped
+        self.status = StatusMessage::Running {
+            running: snapshot.running,
+            download: format_speed(self.global_dl_bps, self.speed_unit),
+            upload: format_speed(self.global_ul_bps, self.speed_unit),
+            packets: snapshot.packets_processed,
+            blocked: snapshot.packets_blocked,
+            lost: snapshot.packets_loss_dropped,
+            loss_percent: if snapshot.packets_loss_eligible == 0 {
+                0.0
+            } else {
+                snapshot.packets_loss_dropped as f64 * 100.0 / snapshot.packets_loss_eligible as f64
+            },
+            limited: snapshot.packets_rate_dropped,
+            delayed: snapshot.packets_delayed,
+            queue_packets: snapshot.delay_queue_packets,
+            queue_bytes: snapshot.delay_queue_bytes,
+            queue_dropped: snapshot.packets_queue_dropped,
+            send_failed: snapshot.packets_send_failed,
+            shutdown_dropped: snapshot.packets_shutdown_dropped,
+            block_error: snapshot.block_error,
+            engine_error: snapshot.engine_error,
         };
         snapshot.running
     }
@@ -774,15 +806,23 @@ enum StatusMessage {
     DisconnectFailed(String),
     DisconnectPartial(usize),
     LanguageFailed(String),
-    BlockDegraded(String),
     Running {
+        running: bool,
         download: String,
         upload: String,
-        packets: String,
-        blocked: String,
-        lost: String,
-        loss_percent: String,
-        limited: String,
+        packets: u64,
+        blocked: u64,
+        lost: u64,
+        loss_percent: f64,
+        limited: u64,
+        delayed: u64,
+        queue_packets: u64,
+        queue_bytes: u64,
+        queue_dropped: u64,
+        send_failed: u64,
+        shutdown_dropped: u64,
+        block_error: Option<String>,
+        engine_error: Option<String>,
     },
 }
 impl StatusMessage {
@@ -797,8 +837,8 @@ impl StatusMessage {
             Self::DisconnectFailed(e) => tr.invoke_disconnect_failed(e.as_str().into()),
             Self::DisconnectPartial(n) => tr.invoke_disconnect_partial(n.to_string().into()),
             Self::LanguageFailed(e) => tr.invoke_language_failed(e.as_str().into()),
-            Self::BlockDegraded(e) => tr.invoke_block_degraded(e.as_str().into()),
             Self::Running {
+                running,
                 download,
                 upload,
                 packets,
@@ -806,15 +846,53 @@ impl StatusMessage {
                 lost,
                 loss_percent,
                 limited,
-            } => tr.invoke_running(
-                download.as_str().into(),
-                upload.as_str().into(),
-                packets.as_str().into(),
-                blocked.as_str().into(),
-                lost.as_str().into(),
-                loss_percent.as_str().into(),
-                limited.as_str().into(),
-            ),
+                delayed,
+                queue_packets,
+                queue_bytes,
+                queue_dropped,
+                send_failed,
+                shutdown_dropped,
+                block_error,
+                engine_error,
+            } => {
+                let mut text = tr
+                    .invoke_running(
+                        download.as_str().into(),
+                        upload.as_str().into(),
+                        packets.to_string().into(),
+                        blocked.to_string().into(),
+                        lost.to_string().into(),
+                        format!("{loss_percent:.2}").into(),
+                        limited.to_string().into(),
+                        if *running {
+                            tr.invoke_started()
+                        } else {
+                            tr.invoke_stopped()
+                        },
+                    )
+                    .to_string();
+                text.push_str("   |   ");
+                text.push_str(
+                    tr.invoke_delay_status(
+                        delayed.to_string().into(),
+                        queue_packets.to_string().into(),
+                        queue_bytes.to_string().into(),
+                        queue_dropped.to_string().into(),
+                        send_failed.to_string().into(),
+                        shutdown_dropped.to_string().into(),
+                    )
+                    .as_str(),
+                );
+                if let Some(error) = block_error {
+                    text.push_str("   |   ");
+                    text.push_str(tr.invoke_block_degraded(error.as_str().into()).as_str());
+                }
+                if let Some(error) = engine_error {
+                    text.push_str("   |   ");
+                    text.push_str(tr.invoke_engine_error(error.as_str().into()).as_str());
+                }
+                text.into()
+            }
         }
     }
 }
@@ -988,6 +1066,16 @@ fn refresh_language_text(app: &AppWindow, state: &AppState) {
         });
         app.set_selected_ul_loss_error(if state.loss_upload_draft.is_some() {
             tr.invoke_loss_invalid()
+        } else {
+            "".into()
+        });
+        app.set_selected_dl_delay_error(if state.delay_download_draft.is_some() {
+            tr.invoke_delay_invalid()
+        } else {
+            "".into()
+        });
+        app.set_selected_ul_delay_error(if state.delay_upload_draft.is_some() {
+            tr.invoke_delay_invalid()
         } else {
             "".into()
         });
@@ -1188,6 +1276,23 @@ fn main() -> Result<(), slint::PlatformError> {
             let applied = state
                 .borrow_mut()
                 .edit_selected_loss(direction.as_str(), value.as_str());
+            if applied {
+                render_rows(&app, &state);
+                persist_settings(&app, &state);
+            } else {
+                update_selected_sidebar(&app, &state);
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let state = Rc::clone(&state);
+        app.on_selected_delay_submitted(move |direction, value| {
+            let app = app_weak.unwrap();
+            let applied = state
+                .borrow_mut()
+                .edit_selected_delay(direction.as_str(), value.as_str());
             if applied {
                 render_rows(&app, &state);
                 persist_settings(&app, &state);
@@ -1590,6 +1695,8 @@ fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
         state.loss_selection = state.selected.clone();
         state.loss_download_draft = None;
         state.loss_upload_draft = None;
+        state.delay_download_draft = None;
+        state.delay_upload_draft = None;
     }
     let Some(row) = state.selected_row() else {
         drop(state);
@@ -1609,6 +1716,10 @@ fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
         app.set_selected_dl_loss_error("".into());
         app.set_selected_ul_loss_error("".into());
         app.set_selected_loss_hint("".into());
+        app.set_selected_dl_delay("".into());
+        app.set_selected_ul_delay("".into());
+        app.set_selected_dl_delay_error("".into());
+        app.set_selected_ul_delay_error("".into());
         app.set_selected_block(false);
         app.set_selected_adaptive(false);
         clear_connections_sidebar(app);
@@ -1680,6 +1791,20 @@ fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
             .unwrap_or_else(|| format_loss_percent(row.rule.upload_loss_basis_points));
         app.set_selected_dl_loss(download.into());
         app.set_selected_ul_loss(upload.into());
+        app.set_selected_dl_delay(
+            state
+                .delay_download_draft
+                .clone()
+                .unwrap_or_else(|| format_delay_ms(row.rule.download_delay_ms))
+                .into(),
+        );
+        app.set_selected_ul_delay(
+            state
+                .delay_upload_draft
+                .clone()
+                .unwrap_or_else(|| format_delay_ms(row.rule.upload_delay_ms))
+                .into(),
+        );
     }
     let tr = app.global::<Translations>();
     app.set_selected_dl_loss_error(if state.loss_download_draft.is_some() {
@@ -1689,6 +1814,16 @@ fn update_selected_sidebar(app: &AppWindow, state_rc: &Rc<RefCell<AppState>>) {
     });
     app.set_selected_ul_loss_error(if state.loss_upload_draft.is_some() {
         tr.invoke_loss_invalid()
+    } else {
+        "".into()
+    });
+    app.set_selected_dl_delay_error(if state.delay_download_draft.is_some() {
+        tr.invoke_delay_invalid()
+    } else {
+        "".into()
+    });
+    app.set_selected_ul_delay_error(if state.delay_upload_draft.is_some() {
+        tr.invoke_delay_invalid()
     } else {
         "".into()
     });
@@ -1974,6 +2109,8 @@ mod tests {
             global_rule: ProcessRule {
                 block_all: true,
                 download_loss_basis_points: Some(1250),
+                download_delay_ms: Some(100),
+                upload_delay_ms: Some(0),
                 ..Default::default()
             },
             expanded: HashSet::from(["example.exe".to_string()]),
@@ -1986,6 +2123,8 @@ mod tests {
             state.selected = Some(RowSelection::Global);
             state.loss_selection = state.selected.clone();
             state.loss_download_draft = Some("101.25".to_string());
+            state.delay_download_draft = Some("5001".to_string());
+            state.delay_upload_draft = Some("-1".to_string());
             state.limit_editing = true;
             state.process_search = "example.exe".to_string();
             state.status = StatusMessage::SaveFailed("error 5".to_string());
@@ -1994,6 +2133,8 @@ mod tests {
         update_selected_sidebar(&app, &state);
         app.set_selected_dl_limit("123.45".into());
         app.set_selected_dl_loss("101.25".into());
+        app.set_selected_dl_delay("5001".into());
+        app.set_selected_ul_delay("-1".into());
         app.set_selected_sidebar_tab(0);
         app.set_running(true);
         let model = state.borrow().ui_rows.clone().unwrap();
@@ -2020,6 +2161,8 @@ mod tests {
         );
         assert_eq!(app.get_selected_kind(), tr.invoke_computer());
         assert_eq!(app.get_selected_dl_loss_error(), tr.invoke_loss_invalid());
+        assert_eq!(app.get_selected_dl_delay_error(), tr.invoke_delay_invalid());
+        assert_eq!(app.get_selected_ul_delay_error(), tr.invoke_delay_invalid());
         assert_eq!(model.row_data(0).unwrap().dl_limit, tr.invoke_off());
         assert!(change_language(&app, &state, 2));
         assert_eq!(tr.invoke_off(), "Off");
@@ -2027,49 +2170,235 @@ mod tests {
         assert_eq!(app.get_selected_kind(), "Computer");
         assert_eq!(app.get_selected_dl_limit(), "123.45");
         assert_eq!(app.get_selected_dl_loss(), "101.25");
+        assert_eq!(app.get_selected_dl_delay(), "5001");
+        assert_eq!(app.get_selected_ul_delay(), "-1");
         assert_eq!(app.get_selected_sidebar_tab(), 0);
         assert!(app.get_running());
         let current = state.borrow();
         assert_eq!(current.global_rule, original_rule);
         assert_eq!(current.selected, Some(RowSelection::Global));
         assert_eq!(current.loss_download_draft.as_deref(), Some("101.25"));
+        assert_eq!(current.delay_download_draft.as_deref(), Some("5001"));
+        assert_eq!(current.delay_upload_draft.as_deref(), Some("-1"));
         assert_eq!(current.process_search, "example.exe");
         assert!(current.expanded.contains("example.exe"));
         assert!(!current.engine.is_running());
         assert!(Rc::ptr_eq(&model, current.ui_rows.as_ref().unwrap()));
         drop(current);
 
+        let status = StatusMessage::Running {
+            running: false,
+            download: "1 Kb/s".into(),
+            upload: "2 Kb/s".into(),
+            packets: 101,
+            blocked: 102,
+            lost: 103,
+            loss_percent: 10.0,
+            limited: 104,
+            delayed: 105,
+            queue_packets: 106,
+            queue_bytes: 107,
+            queue_dropped: 108,
+            send_failed: 109,
+            shutdown_dropped: 110,
+            block_error: Some("block error 5".into()),
+            engine_error: Some("send error 6".into()),
+        };
+        for choice in [1, 2] {
+            assert!(change_language(&app, &state, choice));
+            let text = status.text(&app);
+            for value in 101..=110 {
+                assert!(text.contains(&value.to_string()), "{text}");
+            }
+            assert!(text.contains(tr.invoke_stopped().as_str()));
+            assert!(text.contains(tr.invoke_block_degraded("block error 5".into()).as_str()));
+            assert!(text.contains(tr.invoke_engine_error("send error 6".into()).as_str()));
+        }
+        state.borrow_mut().status = status;
+        state.borrow_mut().limit_editing = false;
+
         if let Ok(output) = std::env::var("FLOWBRAKE_I18N_PREVIEW_DIR") {
             std::fs::create_dir_all(&output).unwrap();
-            app.set_settings_open(true);
+            app.set_settings_open(false);
             app.show().unwrap();
+            let render_preview = |filename: &str| {
+                let size = window.size();
+                let mut pixels =
+                    vec![slint::Rgb8Pixel::default(); (size.width * size.height) as usize];
+                window.request_redraw();
+                assert!(window.draw_if_needed(|renderer| {
+                    renderer.render(&mut pixels, size.width as usize);
+                }));
+                assert!(pixels.iter().any(|pixel| pixel != &pixels[0]));
+                let mut ppm = format!("P6\n{} {}\n255\n", size.width, size.height).into_bytes();
+                for pixel in &pixels {
+                    ppm.extend_from_slice(&[pixel.r, pixel.g, pixel.b]);
+                }
+                std::fs::write(std::path::Path::new(&output).join(filename), ppm).unwrap();
+                pixels
+            };
             for (choice, locale) in [(1, "zh-CN"), (2, "en")] {
                 assert!(change_language(&app, &state, choice));
-                for scale in [1.0_f32, 1.25, 1.5, 2.0] {
-                    window.dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
-                        scale_factor: scale,
-                    });
-                    for (width, height) in [(900, 500), (1180, 700)] {
-                        window.set_size(slint::LogicalSize::new(width as f32, height as f32));
-                        let size = window.size();
-                        let mut pixels =
-                            vec![slint::Rgb8Pixel::default(); (size.width * size.height) as usize];
-                        window.request_redraw();
-                        assert!(window.draw_if_needed(|renderer| {
-                            renderer.render(&mut pixels, size.width as usize);
-                        }));
-                        let mut ppm =
-                            format!("P6\n{} {}\n255\n", size.width, size.height).into_bytes();
-                        for pixel in pixels {
-                            ppm.extend_from_slice(&[pixel.r, pixel.g, pixel.b]);
+                for invalid in [false, true] {
+                    {
+                        let mut state = state.borrow_mut();
+                        state.loss_download_draft = invalid.then(|| "101.25".to_string());
+                        state.loss_upload_draft = invalid.then(|| "-1".to_string());
+                        state.delay_download_draft = invalid.then(|| "5001".to_string());
+                        state.delay_upload_draft = invalid.then(|| "-1".to_string());
+                    }
+                    update_selected_sidebar(&app, &state);
+                    let mode = if invalid { "invalid" } else { "normal" };
+                    for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+                        window.dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
+                            scale_factor: scale,
+                        });
+                        for (width, height) in [(900, 500), (1180, 700)] {
+                            window.set_size(slint::LogicalSize::new(width as f32, height as f32));
+                            let mut top_pixels = Vec::new();
+                            for (scroll, delta_y) in
+                                [("top", 2000.0), ("bottom", -2000.0), ("settings", 0.0)]
+                            {
+                                app.set_settings_open(scroll == "settings");
+                                window.dispatch_event(
+                                    slint::platform::WindowEvent::PointerScrolled {
+                                        position: slint::LogicalPosition::new(
+                                            width as f32 - 150.0,
+                                            height as f32 / 2.0,
+                                        ),
+                                        delta_x: 0.0,
+                                        delta_y,
+                                    },
+                                );
+                                let pixels = render_preview(&format!(
+                                    "{locale}-{mode}-{width}-{}-{scroll}.ppm",
+                                    (scale * 100.0) as u32,
+                                ));
+                                if scroll == "top" {
+                                    top_pixels = pixels;
+                                } else if scroll == "bottom" {
+                                    assert_ne!(pixels, top_pixels, "sidebar must scroll");
+                                }
+                            }
                         }
-                        let path = std::path::Path::new(&output)
-                            .join(format!("{locale}-{width}-{}.ppm", (scale * 100.0) as u32));
-                        std::fs::write(path, ppm).unwrap();
+                    }
+                }
+            }
+            {
+                let mut state = state.borrow_mut();
+                let group_rule = ProcessRule {
+                    upload_delay_ms: Some(200),
+                    ..Default::default()
+                };
+                let child_rule = ProcessRule {
+                    download_delay_ms: Some(0),
+                    ..Default::default()
+                };
+                state.rows = vec![
+                    CoreProcessRow::global(state.global_rule.clone()),
+                    CoreProcessRow {
+                        kind: RowKind::Group {
+                            process_name: "preview.worker.exe".into(),
+                            display_name: "Preview Worker.exe".into(),
+                            exe_path: String::new(),
+                            pids: vec![42001, 42002],
+                            expanded: true,
+                        },
+                        dl_bps: 0.0,
+                        ul_bps: 0.0,
+                        rule: group_rule,
+                    },
+                    CoreProcessRow {
+                        kind: RowKind::Child {
+                            process_name: "preview.worker.exe".into(),
+                            display_name: "Preview Worker.exe".into(),
+                            exe_path: String::new(),
+                            pid: 42002,
+                        },
+                        dl_bps: 0.0,
+                        ul_bps: 0.0,
+                        rule: child_rule,
+                    },
+                ];
+                state.connections_by_pid = [42001, 42002]
+                    .into_iter()
+                    .map(|pid| {
+                        let connection = TcpConnection {
+                            key: TcpConnectionKey::decode_id(&format!(
+                                "4|192.0.2.10|{pid}|198.51.100.20|443",
+                            ))
+                            .unwrap(),
+                            pid,
+                            state: flowbrake_core::TcpConnectionState::Established,
+                        };
+                        (pid, vec![connection])
+                    })
+                    .collect();
+            }
+            app.set_settings_open(false);
+            app.set_selected_sidebar_tab(0);
+            for (row_index, scope) in [(1, "group"), (2, "pid")] {
+                state.borrow_mut().select_row(row_index);
+                {
+                    let mut state = state.borrow_mut();
+                    publish_full_table(&app, &mut state);
+                }
+                update_selected_sidebar(&app, &state);
+                for (choice, locale) in [(1, "zh-CN"), (2, "en")] {
+                    assert!(change_language(&app, &state, choice));
+                    for invalid in [false, true] {
+                        {
+                            let mut state = state.borrow_mut();
+                            state.loss_download_draft = None;
+                            state.loss_upload_draft = None;
+                            state.delay_download_draft = invalid.then(|| "5001".to_string());
+                            state.delay_upload_draft = invalid.then(|| "-1".to_string());
+                        }
+                        update_selected_sidebar(&app, &state);
+                        assert!(app.get_selected_show_connections());
+                        assert!(app.get_selected_can_disconnect_all());
+                        assert_eq!(app.get_selected_loss_hint(), tr.invoke_loss_inherit_hint());
+                        let mode = if invalid { "invalid" } else { "normal" };
+                        for (width, height, scale) in [(900, 500, 1.0_f32), (1180, 700, 2.0)] {
+                            window.dispatch_event(
+                                slint::platform::WindowEvent::ScaleFactorChanged {
+                                    scale_factor: scale,
+                                },
+                            );
+                            window.set_size(slint::LogicalSize::new(width as f32, height as f32));
+                            let mut top_pixels = Vec::new();
+                            for (scroll, delta_y) in [("top", 2000.0), ("bottom", -2000.0)] {
+                                window.dispatch_event(
+                                    slint::platform::WindowEvent::PointerScrolled {
+                                        position: slint::LogicalPosition::new(
+                                            width as f32 - 150.0,
+                                            height as f32 / 2.0,
+                                        ),
+                                        delta_x: 0.0,
+                                        delta_y,
+                                    },
+                                );
+                                let pixels = render_preview(&format!(
+                                    "{locale}-{scope}-{mode}-{width}-{}-{scroll}.ppm",
+                                    (scale * 100.0) as u32,
+                                ));
+                                if scroll == "top" {
+                                    top_pixels = pixels;
+                                } else {
+                                    assert_ne!(pixels, top_pixels, "{scope} sidebar must scroll");
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
+        state.borrow_mut().selected = None;
+        update_selected_sidebar(&app, &state);
+        assert!(state.borrow().delay_download_draft.is_none());
+        assert!(state.borrow().delay_upload_draft.is_none());
+        assert_eq!(app.get_selected_dl_delay(), "");
+        assert_eq!(app.get_selected_ul_delay_error(), "");
     }
 
     #[test]
@@ -2077,11 +2406,15 @@ mod tests {
         let group_rule = ProcessRule {
             download_loss_basis_points: Some(2500),
             upload_loss_basis_points: Some(1000),
+            download_delay_ms: Some(100),
+            upload_delay_ms: Some(200),
             ..Default::default()
         };
         let child_rule = ProcessRule {
             download_loss_basis_points: Some(0),
             upload_loss_basis_points: Some(500),
+            download_delay_ms: Some(0),
+            upload_delay_ms: Some(5000),
             ..Default::default()
         };
         let name_rules = HashMap::from([("example.exe".to_string(), group_rule.clone())]);
@@ -2110,6 +2443,100 @@ mod tests {
         assert_eq!(runtime.download_loss_basis_points, Some(0));
         assert_eq!(runtime.upload_loss_basis_points, Some(125));
         assert!(runtime.has_any_rule());
+    }
+
+    #[test]
+    fn runtime_rule_retains_delay_only_and_explicit_zero_without_speed_limits() {
+        for value in [0, 100, 5000] {
+            let rule = ProcessRule {
+                download_delay_ms: Some(value),
+                upload_delay_ms: Some(value),
+                ..Default::default()
+            };
+            let runtime = runtime_rule(&rule);
+            assert_eq!(runtime.download_delay_ms, Some(value));
+            assert_eq!(runtime.upload_delay_ms, Some(value));
+            assert!(runtime.has_any_rule());
+            assert_eq!(runtime.target_bps(Direction::Download), None);
+            assert_eq!(runtime.target_bps(Direction::Upload), None);
+        }
+    }
+
+    #[test]
+    fn delay_edits_validate_before_changing_active_or_saved_rules() {
+        let mut state = AppState::new(AppSettings {
+            global_rule: ProcessRule {
+                download_delay_ms: Some(100),
+                upload_delay_ms: Some(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        state.selected = Some(RowSelection::Global);
+        state.rows = vec![CoreProcessRow::global(state.global_rule.clone())];
+        let saved = state.to_settings();
+        for (direction, value) in [("dl", "5001"), ("ul", "-1"), ("dl", "1.5"), ("ul", "+1")] {
+            assert!(!state.edit_selected_delay(direction, value));
+            assert_eq!(state.to_settings(), saved);
+        }
+        assert_eq!(state.delay_download_draft.as_deref(), Some("1.5"));
+        assert_eq!(state.delay_upload_draft.as_deref(), Some("+1"));
+        assert!(!state.edit_selected_delay("invalid", "100"));
+        assert!(state.edit_selected_delay("dl", "0"));
+        assert_eq!(state.global_rule.download_delay_ms, Some(0));
+        assert_eq!(state.global_rule.upload_delay_ms, Some(200));
+        assert!(state.delay_download_draft.is_none());
+        state.rows = vec![CoreProcessRow::global(state.global_rule.clone())];
+        assert!(state.edit_selected_delay("ul", " 5000 "));
+        assert_eq!(state.global_rule.upload_delay_ms, Some(5000));
+        assert!(state.delay_upload_draft.is_none());
+        state.rows = vec![CoreProcessRow::global(state.global_rule.clone())];
+        assert!(state.edit_selected_delay("dl", ""));
+        assert_eq!(state.global_rule.download_delay_ms, None);
+        assert_eq!(state.to_settings().global_rule.upload_delay_ms, Some(5000));
+        state.selected = None;
+        assert!(!state.edit_selected_delay("ul", "0"));
+    }
+
+    #[test]
+    fn delay_group_edits_update_current_pids_but_child_edits_do_not_change_template() {
+        let mut state = AppState::new(AppSettings::default());
+        let group = RowKind::Group {
+            process_name: "example.exe".into(),
+            display_name: "Example.exe".into(),
+            exe_path: String::new(),
+            pids: vec![10, 20],
+            expanded: true,
+        };
+        state.selected = Some(RowSelection::from(&group));
+        state.rows = vec![CoreProcessRow {
+            kind: group,
+            dl_bps: 0.0,
+            ul_bps: 0.0,
+            rule: ProcessRule::default(),
+        }];
+        assert!(state.edit_selected_delay("dl", "100"));
+        assert_eq!(state.rules[&10].download_delay_ms, Some(100));
+        assert_eq!(state.rules[&20].download_delay_ms, Some(100));
+        let saved = state.to_settings();
+        assert_eq!(saved.name_rules["example.exe"].download_delay_ms, Some(100));
+        let child = RowKind::Child {
+            process_name: "example.exe".into(),
+            display_name: "Example.exe".into(),
+            exe_path: String::new(),
+            pid: 10,
+        };
+        state.selected = Some(RowSelection::from(&child));
+        state.rows = vec![CoreProcessRow {
+            kind: child,
+            dl_bps: 0.0,
+            ul_bps: 0.0,
+            rule: state.rules[&10].clone(),
+        }];
+        assert!(state.edit_selected_delay("dl", "0"));
+        assert_eq!(state.rules[&10].download_delay_ms, Some(0));
+        assert_eq!(state.rules[&20].download_delay_ms, Some(100));
+        assert_eq!(state.to_settings(), saved);
     }
 
     #[test]

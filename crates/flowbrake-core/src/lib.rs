@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
+pub const MAX_DELAY_MS: u32 = 5000;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProcessRule {
     pub block_all: bool,
@@ -13,6 +15,8 @@ pub struct ProcessRule {
     pub adaptive: bool,
     pub download_loss_basis_points: Option<u16>,
     pub upload_loss_basis_points: Option<u16>,
+    pub download_delay_ms: Option<u32>,
+    pub upload_delay_ms: Option<u32>,
     pub adjusted_dl_bps: f64,
     pub adjusted_ul_bps: f64,
 }
@@ -28,6 +32,8 @@ impl Default for ProcessRule {
             adaptive: false,
             download_loss_basis_points: None,
             upload_loss_basis_points: None,
+            download_delay_ms: None,
+            upload_delay_ms: None,
             adjusted_dl_bps: 0.0,
             adjusted_ul_bps: 0.0,
         }
@@ -44,12 +50,21 @@ impl ProcessRule {
             || self.adaptive
             || self.download_loss_basis_points.is_some()
             || self.upload_loss_basis_points.is_some()
+            || self.download_delay_ms.is_some()
+            || self.upload_delay_ms.is_some()
     }
 
     pub fn loss_basis_points(&self, direction: Direction) -> Option<u16> {
         match direction {
             Direction::Download => self.download_loss_basis_points,
             Direction::Upload => self.upload_loss_basis_points,
+        }
+    }
+
+    pub fn delay_ms(&self, direction: Direction) -> Option<u32> {
+        match direction {
+            Direction::Download => self.download_delay_ms,
+            Direction::Upload => self.upload_delay_ms,
         }
     }
 
@@ -287,6 +302,26 @@ pub fn format_limit_summary(kibps: u32, unit: SpeedUnit) -> String {
         SpeedUnit::Bytes => format!("{kibps} KB/s"),
         SpeedUnit::Bits => format_speed(kibps as f64 * 1024.0, SpeedUnit::Bits),
     }
+}
+
+pub fn parse_delay_ms(text: &str) -> Result<Option<u32>, &'static str> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let error = "Enter an integer from 0 to 5000 milliseconds";
+    if !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(error);
+    }
+    let value = text.parse::<u32>().map_err(|_| error)?;
+    if value > MAX_DELAY_MS {
+        return Err(error);
+    }
+    Ok(Some(value))
+}
+
+pub fn format_delay_ms(value: Option<u32>) -> String {
+    value.map(|value| value.to_string()).unwrap_or_default()
 }
 
 pub fn parse_loss_percent(text: &str) -> Result<Option<u16>, &'static str> {
@@ -694,6 +729,50 @@ fn sum_speed(pids: &[u32], speeds: &HashMap<u32, (f64, f64)>, direction: Directi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delay_parses_and_formats_inheritance_zero_and_boundaries() {
+        assert_eq!(parse_delay_ms(" \t "), Ok(None));
+        assert_eq!(format_delay_ms(None), "");
+        for value in [0, 1, 100, MAX_DELAY_MS] {
+            let text = value.to_string();
+            assert_eq!(parse_delay_ms(&text), Ok(Some(value)));
+            assert_eq!(format_delay_ms(Some(value)), text);
+        }
+        assert_eq!(parse_delay_ms(" 0100 "), Ok(Some(100)));
+    }
+
+    #[test]
+    fn delay_rejects_invalid_values_and_excess_precision() {
+        for text in [
+            "-1",
+            "+1",
+            "5001",
+            "4294967296",
+            "0.1",
+            "100.0",
+            "1e2",
+            "NaN",
+            "100 ms",
+            "1 00",
+            "\u{ff11}\u{ff12}",
+        ] {
+            assert!(parse_delay_ms(text).is_err(), "accepted {text}");
+        }
+    }
+
+    #[test]
+    fn zero_delay_override_is_a_rule_and_directions_are_independent() {
+        let rule = ProcessRule {
+            download_delay_ms: Some(0),
+            upload_delay_ms: Some(MAX_DELAY_MS),
+            ..Default::default()
+        };
+        assert!(rule.has_any_rule());
+        assert_eq!(rule.delay_ms(Direction::Download), Some(0));
+        assert_eq!(rule.delay_ms(Direction::Upload), Some(MAX_DELAY_MS));
+        assert!(!ProcessRule::default().has_any_rule());
+    }
 
     #[test]
     fn loss_percent_parses_and_formats_exact_decimal_values() {

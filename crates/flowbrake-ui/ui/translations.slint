@@ -22,6 +22,9 @@ export global Translations {
     public function loss-invalid() -> string {
         return @tr("Enter a percentage from 0 to 100 with at most two decimal places");
     }
+    public function delay-invalid() -> string {
+        return @tr("Enter whole milliseconds from 0 to 5000");
+    }
     public function tray-open() -> string { return @tr("Open FlowBrake"); }
     public function tray-exit() -> string { return @tr("Exit"); }
     public function stopped() -> string { return @tr("Interceptor stopped"); }
@@ -35,7 +38,11 @@ export global Translations {
     public function disconnect-partial(failed: string) -> string { return @tr("Could not disconnect {} TCP connections", failed); }
     public function language-failed(error: string) -> string { return @tr("Could not change language: {}", error); }
     public function block-degraded(error: string) -> string { return @tr("Block protection degraded: {}", error); }
-    public function running(download: string, upload: string, packets: string, blocked: string, lost: string, loss-percent: string, limited: string) -> string {
-        return @tr("Interceptor running   v {0}   ^ {1}   |   Packets: {2}   Block: {3}   Loss: {4} ({5}%)   Limit: {6}", download, upload, packets, blocked, lost, loss-percent, limited);
+    public function engine-error(error: string) -> string { return @tr("Interceptor error: {}", error); }
+    public function delay-status(delayed: string, packets: string, bytes: string, dropped: string, failed: string, shutdown: string) -> string {
+        return @tr("Delay: {0}   Queue: {1} / {2} B   Overflow: {3}   Send failed: {4}   Shutdown dropped: {5}", delayed, packets, bytes, dropped, failed, shutdown);
+    }
+    public function running(download: string, upload: string, packets: string, blocked: string, lost: string, loss-percent: string, limited: string, state: string) -> string {
+        return @tr("{7}   v {0}   ^ {1}   |   Packets: {2}   Block: {3}   Loss: {4} ({5}%)   Limit: {6}", download, upload, packets, blocked, lost, loss-percent, limited, state);
     }
 }
