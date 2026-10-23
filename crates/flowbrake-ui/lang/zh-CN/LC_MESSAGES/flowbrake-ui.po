@@ -37,6 +37,21 @@ msgstr "阻断流量"
 msgid "Computer"
 msgstr "本机"
 
+msgid "Settings"
+msgstr "设置"
+
+msgid "Minimize"
+msgstr "最小化"
+
+msgid "Maximize"
+msgstr "最大化"
+
+msgid "Restore"
+msgstr "还原"
+
+msgid "Close"
+msgstr "关闭"
+
 msgid "Connections"
 msgstr "连接"
 

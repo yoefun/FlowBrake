@@ -52,7 +52,8 @@ $files = @(
     @{ Source = (Join-Path $targetDir "WinDivert64.sys"); Destination = "WinDivert64.sys" },
     @{ Source = (Join-Path $repoRoot "README.md"); Destination = "README.md" },
     @{ Source = (Join-Path $repoRoot "README.zh-CN.md"); Destination = "README.zh-CN.md" },
-    @{ Source = (Join-Path $repoRoot "LICENSE"); Destination = "LICENSE" }
+    @{ Source = (Join-Path $repoRoot "LICENSE"); Destination = "LICENSE" },
+    @{ Source = (Join-Path $repoRoot "assets/titlebar/LICENSE"); Destination = "LICENSE-LUCIDE" }
 )
 
 foreach ($file in $files) {

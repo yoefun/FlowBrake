@@ -36,6 +36,21 @@ msgstr ""
 msgid "Computer"
 msgstr ""
 
+msgid "Settings"
+msgstr ""
+
+msgid "Minimize"
+msgstr ""
+
+msgid "Maximize"
+msgstr ""
+
+msgid "Restore"
+msgstr ""
+
+msgid "Close"
+msgstr ""
+
 msgid "Connections"
 msgstr ""
 

@@ -2104,6 +2104,53 @@ mod tests {
         slint::platform::set_platform(Box::new(TestPlatform(window.clone()))).unwrap();
         let app = AppWindow::new().unwrap();
         slint::select_bundled_translation("").unwrap();
+        {
+            use slint::platform::{PointerEventButton, WindowEvent};
+            use std::cell::Cell;
+
+            app.show().unwrap();
+            window.set_size(slint::LogicalSize::new(1180.0, 700.0));
+            window.draw_if_needed(|renderer| {
+                let size = window.size();
+                let mut pixels =
+                    vec![slint::Rgb8Pixel::default(); (size.width * size.height) as usize];
+                renderer.render(&mut pixels, size.width as usize);
+            });
+            let click = |x, y| {
+                let position = slint::LogicalPosition::new(x, y);
+                window.dispatch_event(WindowEvent::PointerPressed {
+                    position,
+                    button: PointerEventButton::Left,
+                });
+                window.dispatch_event(WindowEvent::PointerReleased {
+                    position,
+                    button: PointerEventButton::Left,
+                });
+            };
+            let minimized = Rc::new(Cell::new(0));
+            let maximized = Rc::new(Cell::new(0));
+            let closed = Rc::new(Cell::new(0));
+            let count = minimized.clone();
+            app.on_window_minimize_requested(move || count.set(count.get() + 1));
+            let count = maximized.clone();
+            app.on_window_maximize_toggle_requested(move || count.set(count.get() + 1));
+            let count = closed.clone();
+            app.on_window_close_requested(move || count.set(count.get() + 1));
+
+            click(1180.0 - 162.0, 18.0);
+            assert!(app.get_settings_open());
+            click(600.0, 18.0);
+            assert!(!app.get_settings_open());
+            click(1180.0 - 115.0, 18.0);
+            click(1180.0 - 69.0, 18.0);
+            app.set_window_maximized(true);
+            click(1180.0 - 69.0, 18.0);
+            app.set_window_maximized(false);
+            click(1180.0 - 23.0, 18.0);
+            assert_eq!(minimized.get(), 1);
+            assert_eq!(maximized.get(), 2);
+            assert_eq!(closed.get(), 1);
+        }
         let settings = AppSettings {
             language: LanguagePreference::English,
             global_rule: ProcessRule {

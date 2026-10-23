@@ -3,6 +3,8 @@ fn main() {
     println!("cargo:rerun-if-changed=ui/window_chrome.slint");
     println!("cargo:rerun-if-changed=ui/widgets.slint");
     println!("cargo:rerun-if-changed=ui/translations.slint");
+    println!("cargo:rerun-if-changed=../../assets/app-icon.png");
+    println!("cargo:rerun-if-changed=../../assets/titlebar");
     println!("cargo:rerun-if-changed=lang");
     println!("cargo:rerun-if-changed=../../assets/app.ico");
     println!("cargo:rerun-if-changed=../../third_party/windivert/WinDivert.dll");

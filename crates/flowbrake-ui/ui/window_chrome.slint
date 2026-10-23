@@ -1,70 +1,16 @@
 import { CheckBoxSlot } from "widgets.slint";
 
-component ChromeIcon inherits Rectangle {
+component ChromeIcon inherits Image {
     in property <string> kind;
     in property <bool> restore;
     in property <color> line-color;
-    background: transparent;
-
-    if (root.kind == "minimize") : Rectangle {
-        width: 12px;
-        height: 2px;
-        x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2 + 5px;
-        background: root.line-color;
-        border-radius: 1px;
-    }
-
-    if (root.kind == "maximize" && !root.restore) : Rectangle {
-        width: 11px;
-        height: 10px;
-        x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2;
-        background: transparent;
-        border-color: root.line-color;
-        border-width: 1px;
-    }
-
-    if (root.kind == "maximize" && root.restore) : Rectangle {
-        width: 11px;
-        height: 10px;
-        x: (root.width - self.width) / 2 - 2px;
-        y: (root.height - self.height) / 2 + 2px;
-        background: transparent;
-        border-color: root.line-color;
-        border-width: 1px;
-    }
-
-    if (root.kind == "maximize" && root.restore) : Rectangle {
-        width: 11px;
-        height: 10px;
-        x: (root.width - self.width) / 2 + 2px;
-        y: (root.height - self.height) / 2 - 2px;
-        background: transparent;
-        border-color: root.line-color;
-        border-width: 1px;
-    }
-
-    if (root.kind == "close") : Text {
-        text: "X";
-        width: root.width;
-        height: root.height;
-        color: root.line-color;
-        font-size: 14px;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-
-    if (root.kind == "settings") : Path {
-        width: 14px;
-        height: 14px;
-        x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2;
-        stroke: root.line-color;
-        stroke-width: 1.2px;
-        commands: "M 7 1.5 A 2.2 2.2 0 1 1 6.99 1.5 M 7 3.2 L 7 4.4 M 7 9.6 L 7 10.8 M 3.2 7 L 4.4 7 M 9.6 7 L 10.8 7 M 4.5 4.5 L 5.3 5.3 M 8.7 8.7 L 9.5 9.5 M 4.5 9.5 L 5.3 8.7 M 8.7 5.3 L 9.5 4.5";
-    }
+    source: root.kind == "settings" ? @image-url("../../../assets/titlebar/settings.svg")
+        : root.kind == "minimize" ? @image-url("../../../assets/titlebar/minus.svg")
+        : root.kind == "close" ? @image-url("../../../assets/titlebar/x.svg")
+        : root.restore ? @image-url("../../../assets/titlebar/copy.svg")
+        : @image-url("../../../assets/titlebar/square.svg");
+    colorize: root.line-color;
+    image-fit: contain;
 }
 
 component SettingsMenuItem inherits Rectangle {
@@ -271,13 +217,58 @@ export component SettingsDropdown inherits Rectangle {
 
 export component SettingsButton inherits Rectangle {
     callback clicked();
+    in property <bool> active;
+    forward-focus: keyboard;
+    accessible-role: button;
+    accessible-label: @tr("Settings");
+    accessible-action-default => { root.clicked(); }
 
     width: 40px;
-    height: 36px;
-    background: !hit.has-hover ? transparent : (hit.pressed ? #d5dde8 : #edf2f7);
+    height: 40px;
+    background: hit.pressed ? #e3e6eb : root.active ? #eaf2ff : hit.has-hover ? #f2f4f7 : transparent;
+
+    keyboard := FocusScope {
+        width: 0px;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    if keyboard.has-focus: Rectangle {
+        x: 3px; y: 3px;
+        width: parent.width - 6px; height: parent.height - 6px;
+        border-radius: 4px; border-width: 1px;
+        border-color: #1d5fd1; background: transparent;
+    }
+
+    Timer {
+        interval: 600ms;
+        running: hit.has-hover && !hit.pressed && !root.active;
+        triggered => { tooltip.show(); }
+    }
+
+    tooltip := PopupWindow {
+        x: -16px;
+        y: 44px;
+        width: 84px;
+        height: 28px;
+        Rectangle {
+            background: #20242c;
+            border-radius: 4px;
+            Text {
+                text: @tr("Settings");
+                color: white;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
 
     hit := TouchArea {
+        changed has-hover => { if !self.has-hover { tooltip.close(); } }
         clicked => {
+            tooltip.close();
             root.clicked();
         }
     }
@@ -296,15 +287,35 @@ export component WindowControlButton inherits Rectangle {
     in property <string> kind;
     in property <bool> restore: false;
     callback clicked();
+    forward-focus: keyboard;
+    accessible-role: button;
+    accessible-label: root.kind == "minimize" ? @tr("Minimize")
+        : root.kind == "close" ? @tr("Close")
+        : root.restore ? @tr("Restore") : @tr("Maximize");
+    accessible-action-default => { root.clicked(); }
 
     width: 46px;
-    height: 36px;
+    height: 40px;
     background: !hit.has-hover ? transparent
         : root.kind == "close"
             ? (hit.pressed ? #a82424 : #d83b3b)
             : (hit.pressed ? #d5dde8 : #edf2f7);
 
     property <color> icon-color: root.kind == "close" && hit.has-hover ? #ffffff : #28313d;
+
+    keyboard := FocusScope {
+        width: 0px;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    if keyboard.has-focus: Rectangle {
+        x: 3px; y: 3px;
+        width: parent.width - 6px; height: parent.height - 6px;
+        border-radius: 4px; border-width: 1px;
+        border-color: #1d5fd1; background: transparent;
+    }
 
     hit := TouchArea {
         clicked => {
@@ -335,41 +346,36 @@ export component TitleBar inherits Rectangle {
     callback close-requested();
     callback speed-unit-bits-changed(bool);
 
-    height: 36px;
-    background: #f9fbfe;
-    border-color: #dfe6ef;
-    border-width: 1px;
+    height: 40px;
+    background: #ffffff;
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: #e3e6eb;
+    }
 
     HorizontalLayout {
-        padding-left: 12px;
+        padding-left: 14px;
         spacing: 0px;
 
-        Rectangle {
-            width: 18px;
-            height: 18px;
+        Image {
+            width: 22px;
+            height: 22px;
             y: (parent.height - self.height) / 2;
-            background: #245b85;
-            border-radius: 4px;
-
-            Text {
-                text: "F";
-                width: parent.width;
-                height: parent.height;
-                color: white;
-                font-size: 11px;
-                font-weight: 700;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
+            source: @image-url("../../../assets/app-icon.png");
+            image-fit: contain;
         }
+
+        Rectangle { width: 8px; }
 
         Text {
             text: root.title;
             width: 150px;
             height: parent.height;
-            color: #24303f;
-            font-size: 12px;
-            font-weight: 700;
+            color: #20242c;
+            font-size: 13px;
+            font-weight: 600;
             vertical-alignment: center;
             horizontal-alignment: left;
             overflow: elide;
@@ -398,6 +404,7 @@ export component TitleBar inherits Rectangle {
         }
 
         SettingsButton {
+            active: root.settings-open;
             clicked => {
                 root.settings-open = !root.settings-open;
             }
